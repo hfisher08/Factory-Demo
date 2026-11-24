@@ -44,7 +44,8 @@ class OutputTest(unittest.TestCase):
         self.assertIn("&lt;script&gt;", page)
 
     def test_cli_rejects_invalid_input(self):
-        with self.assertRaises(SystemExit) as ctx:
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as ctx:
             main(["--engineers", "0", "--loaded-cost", "1",
                   "--hours-saved", "1", "--tool-cost", "1"])
         self.assertEqual(ctx.exception.code, 2)
@@ -146,6 +147,18 @@ class CalculationValidationTest(unittest.TestCase):
                     calculate_roi(**dict(base, **overrides))
                 self.assertEqual(str(ctx.exception), message)
 
+    def test_rejects_integer_too_large_for_float(self):
+        with self.assertRaises(ValueError) as ctx:
+            calculate_roi(10 ** 400, 1, 1, 1)
+        self.assertEqual(str(ctx.exception),
+                         "inputs are too large to produce a meaningful estimate")
+
+    def test_rejects_inputs_that_overflow(self):
+        with self.assertRaises(ValueError) as ctx:
+            calculate_roi(100, 1e308, 4, 1)
+        self.assertEqual(str(ctx.exception),
+                         "inputs are too large to produce a meaningful estimate")
+
 
 # === End of calculation and validation tests ===
 
@@ -227,10 +240,28 @@ class ReportOutputTest(unittest.TestCase):
 
     def test_not_paying_back_wording(self):
         r = calculate_roi(10, 150_000, 0, 50_000)
-        wording = "Does not pay back (value is below cost)"
+        wording = "Does not pay back (value does not exceed cost)"
         self.assertIn(wording, format_summary(r))
         self.assertIn(f"<td>{wording}</td>", render_html("Acme", r))
         self.assertNotIn("never", format_summary(r))
+
+    def test_value_equal_to_cost_wording(self):
+        r = calculate_roi(100, 200_000, 4, 2_000_000)
+        summary = format_summary(r)
+        self.assertIn("Does not pay back (value does not exceed cost)", summary)
+        self.assertNotIn("below", summary)
+
+    def test_money_never_shows_negative_zero(self):
+        self.assertEqual(format_money(-0.4, "GBP"), "£0")
+        self.assertEqual(format_money(-0.004, "USD", 2), "$0.00")
+        self.assertEqual(format_money(-0.6, "EUR"), "-€1")
+        r = calculate_roi(1, 100_000, 4, 10_000.4)
+        self.assertNotIn("-$0", format_summary(r))
+        self.assertNotIn("-$0", render_html("Acme", r))
+
+    def test_inputs_show_value_as_entered(self):
+        page = render_html("Acme", calculate_roi(1, 100_000, 4.125, 1))
+        self.assertIn("<tr><th>Hours saved per engineer per week</th><td>4.125</td></tr>", page)
 
     def test_finite_payback_wording(self):
         self.assertIn("3.0 months", format_summary(self.result))
@@ -305,6 +336,43 @@ class CommandLineTest(unittest.TestCase):
                     page = f.read()
                 self.assertIn("<title>ROI estimate for Prospect</title>", page)
                 self.assertIn("Prospect</h1>", page)
+
+    def test_warning_share_is_not_rounded_down_to_threshold(self):
+        _, _, err = run_cli(BASE_ARGS + ["--hours-saved", "8.1"])
+        self.assertIn("--hours-saved 8.1 is 20.2% of a 40-hour week", err)
+
+    def test_empty_html_path_is_an_error(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as ctx:
+            main(BASE_ARGS + ["--hours-saved", "4", "--html", ""])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--html needs a file path", err.getvalue())
+
+    def test_overflowing_inputs_exit_cleanly_without_writing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "report.html")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as ctx:
+                main(["--engineers", "100", "--loaded-cost", "1e308", "--hours-saved", "4",
+                      "--tool-cost", "1", "--html", path])
+            self.assertFalse(os.path.exists(path))
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("inputs are too large", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_terminal_output_includes_rounding_note_and_caveat(self):
+        _, out, _ = run_cli(BASE_ARGS + ["--hours-saved", "4"])
+        self.assertIn("Figures are rounded for display.", out)
+        self.assertIn("Estimate only:", out)
+
+    def test_weeks_help_explains_range_and_default(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            main(["--help"])
+        self.assertIn("Working weeks per year, from 1 to 52 (default 46)",
+                      " ".join(out.getvalue().split()))
 
     def test_customer_name_is_stripped(self):
         _, out, _ = run_cli(BASE_ARGS + ["--hours-saved", "4", "--customer", "  Acme  "])

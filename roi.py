@@ -23,6 +23,22 @@ class RoiResult:
     hours_per_week: float
 
 
+TOO_LARGE = "inputs are too large to produce a meaningful estimate"
+
+
+def _too_large(value) -> bool:
+    # Python ints can exceed the float range; math.isfinite would raise on them.
+    try:
+        float(value)
+    except OverflowError:
+        return True
+    return False
+
+
+def _is_finite(value) -> bool:
+    return math.isfinite(value)
+
+
 def calculate_roi(
     engineers: int,
     loaded_annual_cost: float,
@@ -31,17 +47,21 @@ def calculate_roi(
     working_weeks: int = 46,
     hours_per_week: float = 40,
 ) -> RoiResult:
-    if not math.isfinite(engineers) or engineers <= 0:
+    inputs = (engineers, loaded_annual_cost, hours_saved_per_week, annual_tool_cost,
+              working_weeks, hours_per_week)
+    if any(_too_large(v) for v in inputs):
+        raise ValueError(TOO_LARGE)
+    if not _is_finite(engineers) or engineers <= 0:
         raise ValueError("--engineers must be greater than 0")
-    if not math.isfinite(loaded_annual_cost) or loaded_annual_cost <= 0:
+    if not _is_finite(loaded_annual_cost) or loaded_annual_cost <= 0:
         raise ValueError("--loaded-cost must be a number greater than 0")
-    if not math.isfinite(annual_tool_cost) or annual_tool_cost <= 0:
+    if not _is_finite(annual_tool_cost) or annual_tool_cost <= 0:
         raise ValueError("--tool-cost must be a number greater than 0")
-    if not math.isfinite(working_weeks) or not 1 <= working_weeks <= 52:
+    if not _is_finite(working_weeks) or not 1 <= working_weeks <= 52:
         raise ValueError("--weeks must be between 1 and 52")
-    if not math.isfinite(hours_per_week) or hours_per_week <= 0:
+    if not _is_finite(hours_per_week) or hours_per_week <= 0:
         raise ValueError("hours per week must be a number greater than 0")
-    if not math.isfinite(hours_saved_per_week) or not (
+    if not _is_finite(hours_saved_per_week) or not (
         0 <= hours_saved_per_week <= hours_per_week
     ):
         raise ValueError(
@@ -60,6 +80,9 @@ def calculate_roi(
         if annual_value > annual_tool_cost
         else float("inf")
     )
+    # Finite inputs can still overflow, e.g. a loaded cost of 1e308.
+    if not all(_is_finite(v) for v in (hourly_cost, annual_value, net_value, roi_percent)):
+        raise ValueError(TOO_LARGE)
     return RoiResult(
         hourly_cost=hourly_cost,
         hours_saved_per_year=hours_saved_per_year,
@@ -81,8 +104,10 @@ CURRENCY_SYMBOLS = {"USD": "$", "GBP": "£", "EUR": "€"}
 
 def format_money(amount: float, currency: str = "USD", decimals: int = 0) -> str:
     symbol = CURRENCY_SYMBOLS[currency]
-    sign = "-" if amount < 0 else ""
-    return f"{sign}{symbol}{abs(amount):,.{decimals}f}"
+    # Round before taking the sign so tiny negatives don't display as "-£0".
+    rounded = round(amount, decimals)
+    sign = "-" if rounded < 0 else ""
+    return f"{sign}{symbol}{abs(rounded):,.{decimals}f}"
 
 
 def format_percent(value: float) -> str:
@@ -93,12 +118,12 @@ def format_percent(value: float) -> str:
 def format_number(value: float) -> str:
     if float(value).is_integer():
         return f"{value:,.0f}"
-    return f"{value:,.2f}".rstrip("0").rstrip(".")
+    return f"{value:,.6f}".rstrip("0").rstrip(".")
 
 
 def format_payback(payback_months: float) -> str:
     if math.isinf(payback_months):
-        return "Does not pay back (value is below cost)"
+        return "Does not pay back (value does not exceed cost)"
     return f"{payback_months:.1f} months"
 
 
@@ -125,6 +150,11 @@ def input_rows(result: RoiResult, currency: str = "USD"):
         ("Annual tool cost", format_money(result.annual_cost, currency)),
     ]
 
+
+ROUNDING_NOTE = (
+    "Figures are rounded for display. Totals are calculated from unrounded values, "
+    "so displayed figures may not multiply out exactly."
+)
 
 CAVEATS = (
     "It assumes every hour saved becomes productive work.",
@@ -183,7 +213,7 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 <p>Illustrative estimate. Results depend entirely on the inputs used.</p>
 <div class="big">{roi} ROI</div>
 <table class="results">{rows}</table>
-<p class="note">Figures are rounded for display. Totals are calculated from unrounded values, so displayed figures may not multiply out exactly.</p>
+<p class="note">{html.escape(ROUNDING_NOTE)}</p>
 <h2>Inputs and assumptions</h2>
 <table class="inputs">{inputs}</table>
 <p class="note">{currency_note}</p>
@@ -205,7 +235,8 @@ def main(argv=None) -> int:
                         help="Hours saved per engineer per week")
     parser.add_argument("--tool-cost", type=float, required=True,
                         help="Annual cost of the tool, in the chosen --currency")
-    parser.add_argument("--weeks", type=int, default=46)
+    parser.add_argument("--weeks", type=int, default=46,
+                        help="Working weeks per year, from 1 to 52 (default 46)")
     parser.add_argument("--currency", choices=sorted(CURRENCY_SYMBOLS), default="USD",
                         help="Currency for all money inputs and outputs. "
                              "Labels only: no exchange-rate conversion is applied.")
@@ -222,22 +253,30 @@ def main(argv=None) -> int:
 
     if result.hours_saved_per_week > 0.2 * result.hours_per_week:
         share = result.hours_saved_per_week / result.hours_per_week * 100
-        print(f"Warning: --hours-saved {result.hours_saved_per_week:g} is {share:.0f}% "
+        print(f"Warning: --hours-saved {result.hours_saved_per_week:g} is "
+              f"{round(share, 1):g}% "
               f"of a {result.hours_per_week:g}-hour week. A customer may see this as "
               "unrealistic; double-check it before sharing.", file=sys.stderr)
 
     # Write the report before printing so a bad path fails cleanly, not mid-output.
-    if args.html:
+    if args.html is not None and not args.html.strip():
+        parser.error("--html needs a file path, for example --html report.html")
+    if args.html is not None:
+        # Render first so a rendering error can't leave an empty file behind.
+        page = render_html(customer, result, args.currency)
         try:
             with open(args.html, "w", encoding="utf-8") as f:
-                f.write(render_html(customer, result, args.currency))
+                f.write(page)
         except OSError as exc:
             parser.error(f"could not write HTML report to {args.html}: "
                          f"{exc.strerror or exc}")
 
     print(f"ROI estimate for {customer}\n")
     print(format_summary(result, args.currency))
-    if args.html:
+    print(f"\n{ROUNDING_NOTE}")
+    print("Estimate only: it assumes every hour saved becomes productive work and full "
+          "adoption from day one. Use --html for the full inputs and caveats.")
+    if args.html is not None:
         print(f"\nHTML report written to {args.html}")
     return 0
 
