@@ -75,30 +75,78 @@ def format_money(amount: float, currency: str = "USD", decimals: int = 0) -> str
     return f"{sign}{symbol}{abs(amount):,.{decimals}f}"
 
 
+def format_percent(value: float) -> str:
+    # Rounding to an int first means values like -0.01 show as "0%", not "-0%".
+    return f"{int(round(value)):,}%"
+
+
+def format_number(value: float) -> str:
+    if float(value).is_integer():
+        return f"{value:,.0f}"
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def format_payback(payback_months: float) -> str:
+    if math.isinf(payback_months):
+        return "Does not pay back (value is below cost)"
+    return f"{payback_months:.1f} months"
+
+
+def summary_rows(result: RoiResult, currency: str = "USD"):
+    return [
+        ("Engineer hourly cost", format_money(result.hourly_cost, currency, 2)),
+        ("Hours saved per year", f"{result.hours_saved_per_year:,.0f}"),
+        ("Estimated value of time saved", format_money(result.annual_value, currency)),
+        ("Annual tool cost", format_money(result.annual_cost, currency)),
+        ("Estimated net annual value", format_money(result.net_value, currency)),
+        ("ROI", format_percent(result.roi_percent)),
+        ("Payback period", format_payback(result.payback_months)),
+    ]
+
+
+def input_rows(result: RoiResult, currency: str = "USD"):
+    return [
+        ("Engineers", format_number(result.engineers)),
+        ("Fully loaded annual cost per engineer",
+         format_money(result.loaded_annual_cost, currency)),
+        ("Hours saved per engineer per week", format_number(result.hours_saved_per_week)),
+        ("Working weeks per year", format_number(result.working_weeks)),
+        ("Hours per working week", format_number(result.hours_per_week)),
+        ("Annual tool cost", format_money(result.annual_cost, currency)),
+    ]
+
+
+CAVEATS = (
+    "It assumes every hour saved becomes productive work.",
+    "It assumes full adoption from day one with no ramp-up, so the payback "
+    "period is a best case.",
+    "It excludes implementation, training and review costs.",
+    "It treats the tool cost as recurring every year.",
+)
+
+
 def format_summary(result: RoiResult, currency: str = "USD") -> str:
-    payback = (
-        "never" if result.payback_months == float("inf")
-        else f"{result.payback_months:.1f} months"
+    rows = summary_rows(result, currency)
+    width = max(len(label) for label, _ in rows) + 2
+    return "\n".join(f"{label + ':':<{width}}{value}" for label, value in rows)
+
+
+def _table_rows(rows) -> str:
+    return "".join(
+        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>"
+        for label, value in rows
     )
-    return "\n".join([
-        f"Engineer hourly cost:   {format_money(result.hourly_cost, currency, 2)}",
-        f"Hours saved per year:   {result.hours_saved_per_year:,.0f}",
-        f"Annual value created:   {format_money(result.annual_value, currency)}",
-        f"Annual tool cost:       {format_money(result.annual_cost, currency)}",
-        f"Net annual value:       {format_money(result.net_value, currency)}",
-        f"ROI:                    {result.roi_percent:,.0f}%",
-        f"Payback period:         {payback}",
-    ])
 
 
 def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
-    rows = "".join(
-        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value.strip())}</td></tr>"
-        for label, value in (
-            line.split(":", 1)
-            for line in format_summary(result, currency).splitlines()
-        )
+    rows = _table_rows(summary_rows(result, currency))
+    inputs = _table_rows(input_rows(result, currency))
+    currency_note = html.escape(
+        f"All amounts are in {currency} ({CURRENCY_SYMBOLS[currency]}). "
+        "No exchange-rate conversion is applied."
     )
+    caveats = "".join(f"<li>{html.escape(c)}</li>" for c in CAVEATS)
+    roi = html.escape(format_percent(result.roi_percent))
     name = html.escape(customer)
     return f"""<!doctype html>
 <html lang="en">
@@ -109,18 +157,29 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
   body {{ font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 640px;
          margin: 48px auto; color: #1c1917; }}
   h1 {{ font-size: 24px; margin-bottom: 4px; }}
+  h2 {{ font-size: 18px; margin: 40px 0 0; }}
   p {{ color: #57534e; margin-top: 0; }}
   table {{ width: 100%; border-collapse: collapse; margin-top: 24px; }}
   th, td {{ padding: 12px 8px; border-bottom: 1px solid #e7e5e4; text-align: left; }}
   td {{ text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }}
   .big {{ font-size: 40px; font-weight: 700; color: #ea580c; margin: 24px 0 0; }}
+  .note {{ font-size: 14px; margin-top: 12px; }}
+  ul {{ color: #57534e; padding-left: 20px; }}
+  li {{ margin: 6px 0; }}
 </style>
 </head>
 <body>
 <h1>AI agent ROI estimate: {name}</h1>
 <p>Illustrative estimate. Results depend entirely on the inputs used.</p>
-<div class="big">{result.roi_percent:,.0f}% ROI</div>
-<table>{rows}</table>
+<div class="big">{roi} ROI</div>
+<table class="results">{rows}</table>
+<p class="note">Figures are rounded for display. Totals are calculated from unrounded values, so displayed figures may not multiply out exactly.</p>
+<h2>Inputs and assumptions</h2>
+<table class="inputs">{inputs}</table>
+<p class="note">{currency_note}</p>
+<h2>Caveats</h2>
+<p>This is an estimate, not a forecast.</p>
+<ul class="caveats">{caveats}</ul>
 </body>
 </html>
 """
