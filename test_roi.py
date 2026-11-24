@@ -62,15 +62,15 @@ class CurrencyTest(unittest.TestCase):
 
     def test_summary_defaults_to_usd(self):
         summary = format_summary(self.result)
-        self.assertIn("Annual value created:   $2,000,000", summary)
+        self.assertIn("Estimated value of time saved: $2,000,000", summary)
         self.assertNotIn("£", summary)
 
     def test_summary_and_html_use_chosen_currency(self):
         for code, symbol in (("GBP", "£"), ("EUR", "€")):
             with self.subTest(currency=code):
                 summary = format_summary(self.result, code)
-                self.assertIn(f"Annual value created:   {symbol}2,000,000", summary)
-                self.assertIn(f"Engineer hourly cost:   {symbol}108.70", summary)
+                self.assertIn(f"Estimated value of time saved: {symbol}2,000,000", summary)
+                self.assertIn(f"Engineer hourly cost:          {symbol}108.70", summary)
                 self.assertNotIn("$", summary)
                 page = render_html("Acme", self.result, code)
                 self.assertIn(f"<td>{symbol}1,500,000</td>", page)
@@ -151,6 +151,94 @@ class CalculationValidationTest(unittest.TestCase):
 
 
 # === Report and summary output tests ===
+
+
+class ReportOutputTest(unittest.TestCase):
+    def setUp(self):
+        self.result = calculate_roi(100, 200_000, 4, 500_000)
+
+    def test_html_has_inputs_table_in_chosen_currency(self):
+        r = calculate_roi(12, 150_000, 4.5, 60_000, working_weeks=44, hours_per_week=37.5)
+        for code, symbol in (("USD", "$"), ("GBP", "£"), ("EUR", "€")):
+            with self.subTest(currency=code):
+                page = render_html("Acme", r, code)
+                self.assertIn("<h2>Inputs and assumptions</h2>", page)
+                inputs = page.split('<table class="inputs">', 1)[1].split("</table>", 1)[0]
+                for label, value in (
+                    ("Engineers", "12"),
+                    ("Fully loaded annual cost per engineer", f"{symbol}150,000"),
+                    ("Hours saved per engineer per week", "4.5"),
+                    ("Working weeks per year", "44"),
+                    ("Hours per working week", "37.5"),
+                    ("Annual tool cost", f"{symbol}60,000"),
+                ):
+                    self.assertIn(f"<tr><th>{label}</th><td>{value}</td></tr>", inputs)
+                self.assertIn(f"All amounts are in {code} ({symbol}). "
+                              "No exchange-rate conversion is applied.", page)
+
+    def test_renamed_labels_in_summary_and_html(self):
+        summary = format_summary(self.result)
+        page = render_html("Acme", self.result)
+        for old, new in (("Annual value created", "Estimated value of time saved"),
+                         ("Net annual value", "Estimated net annual value")):
+            with self.subTest(label=new):
+                self.assertIn(new, summary)
+                self.assertIn(f"<th>{new}</th>", page)
+                self.assertNotIn(old, summary)
+                self.assertNotIn(old, page)
+
+    def test_summary_values_are_aligned(self):
+        lines = format_summary(self.result).splitlines()
+        columns = {line.index("$") if "$" in line else None for line in lines}
+        columns.discard(None)
+        self.assertEqual(len(columns), 1)
+
+    def test_html_lists_caveats(self):
+        page = render_html("Acme", self.result)
+        self.assertIn("<h2>Caveats</h2>", page)
+        for phrase in ("every hour saved becomes productive work",
+                       "no ramp-up, so the payback period is a best case",
+                       "excludes implementation, training and review costs",
+                       "tool cost as recurring every year"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, page)
+        self.assertNotIn("typical", page.lower())
+
+    def test_near_zero_negative_roi_shows_zero(self):
+        r = calculate_roi(1, 100_000, 4, 10_001)
+        self.assertLess(r.roi_percent, 0)
+        summary = format_summary(r)
+        page = render_html("Acme", r)
+        self.assertNotIn("-0%", summary)
+        self.assertNotIn("-0%", page)
+        self.assertIn("ROI:", summary)
+        self.assertTrue(summary.splitlines()[5].endswith(" 0%"))
+        self.assertIn('<div class="big">0% ROI</div>', page)
+        self.assertIn("<tr><th>ROI</th><td>0%</td></tr>", page)
+
+    def test_negative_roi_keeps_sign(self):
+        r = calculate_roi(10, 150_000, 0, 50_000)
+        self.assertIn("-100%", format_summary(r))
+
+    def test_html_has_rounding_footnote(self):
+        page = render_html("Acme", self.result)
+        self.assertIn("Figures are rounded for display. Totals are calculated "
+                      "from unrounded values", page)
+
+    def test_not_paying_back_wording(self):
+        r = calculate_roi(10, 150_000, 0, 50_000)
+        wording = "Does not pay back (value is below cost)"
+        self.assertIn(wording, format_summary(r))
+        self.assertIn(f"<td>{wording}</td>", render_html("Acme", r))
+        self.assertNotIn("never", format_summary(r))
+
+    def test_finite_payback_wording(self):
+        self.assertIn("3.0 months", format_summary(self.result))
+
+    def test_html_escapes_customer_name_in_all_places(self):
+        page = render_html('<b>"A&B"</b>', self.result, "GBP")
+        self.assertNotIn("<b>", page)
+        self.assertEqual(page.count("&lt;b&gt;&quot;A&amp;B&quot;&lt;/b&gt;"), 2)
 
 
 # === End of report and summary output tests ===
