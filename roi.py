@@ -2,6 +2,7 @@
 
 import argparse
 import html
+import math
 import sys
 from dataclasses import dataclass
 
@@ -15,6 +16,11 @@ class RoiResult:
     net_value: float
     roi_percent: float
     payback_months: float
+    engineers: int
+    loaded_annual_cost: float
+    hours_saved_per_week: float
+    working_weeks: int
+    hours_per_week: float
 
 
 def calculate_roi(
@@ -52,6 +58,11 @@ def calculate_roi(
         net_value=net_value,
         roi_percent=roi_percent,
         payback_months=payback_months,
+        engineers=engineers,
+        loaded_annual_cost=loaded_annual_cost,
+        hours_saved_per_week=hours_saved_per_week,
+        working_weeks=working_weeks,
+        hours_per_week=hours_per_week,
     )
 
 

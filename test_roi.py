@@ -96,5 +96,23 @@ class CurrencyTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
 
 
+# === Calculation and validation tests ===
+
+
+# === End of calculation and validation tests ===
+
+
+# === Report and summary output tests ===
+
+
+# === End of report and summary output tests ===
+
+
+# === Command-line tests ===
+
+
+# === End of command-line tests ===
+
+
 if __name__ == "__main__":
     unittest.main()
