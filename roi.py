@@ -131,11 +131,11 @@ def main(argv=None) -> int:
     parser.add_argument("--customer", default="Prospect")
     parser.add_argument("--engineers", type=int, required=True)
     parser.add_argument("--loaded-cost", type=float, required=True,
-                        help="Fully loaded annual cost per engineer, in dollars")
+                        help="Fully loaded annual cost per engineer, in the chosen --currency")
     parser.add_argument("--hours-saved", type=float, required=True,
                         help="Hours saved per engineer per week")
     parser.add_argument("--tool-cost", type=float, required=True,
-                        help="Annual cost of the tool, in dollars")
+                        help="Annual cost of the tool, in the chosen --currency")
     parser.add_argument("--weeks", type=int, default=46)
     parser.add_argument("--currency", choices=sorted(CURRENCY_SYMBOLS), default="USD",
                         help="Currency for all money inputs and outputs. "
@@ -143,17 +143,32 @@ def main(argv=None) -> int:
     parser.add_argument("--html", metavar="PATH", help="Also write an HTML report")
     args = parser.parse_args(argv)
 
+    customer = args.customer.strip() or "Prospect"
+
     try:
         result = calculate_roi(args.engineers, args.loaded_cost, args.hours_saved,
                                args.tool_cost, working_weeks=args.weeks)
     except ValueError as exc:
         parser.error(str(exc))
 
-    print(f"ROI estimate for {args.customer}\n")
+    if result.hours_saved_per_week > 0.2 * result.hours_per_week:
+        share = result.hours_saved_per_week / result.hours_per_week * 100
+        print(f"Warning: --hours-saved {result.hours_saved_per_week:g} is {share:.0f}% "
+              f"of a {result.hours_per_week:g}-hour week. A customer may see this as "
+              "unrealistic; double-check it before sharing.", file=sys.stderr)
+
+    # Write the report before printing so a bad path fails cleanly, not mid-output.
+    if args.html:
+        try:
+            with open(args.html, "w", encoding="utf-8") as f:
+                f.write(render_html(customer, result, args.currency))
+        except OSError as exc:
+            parser.error(f"could not write HTML report to {args.html}: "
+                         f"{exc.strerror or exc}")
+
+    print(f"ROI estimate for {customer}\n")
     print(format_summary(result, args.currency))
     if args.html:
-        with open(args.html, "w", encoding="utf-8") as f:
-            f.write(render_html(args.customer, result, args.currency))
         print(f"\nHTML report written to {args.html}")
     return 0
 
