@@ -31,24 +31,34 @@ def calculate_roi(
     working_weeks: int = 46,
     hours_per_week: float = 40,
 ) -> RoiResult:
-    if engineers <= 0:
-        raise ValueError("engineers must be greater than 0")
-    if loaded_annual_cost <= 0:
-        raise ValueError("loaded_annual_cost must be greater than 0")
-    if annual_tool_cost <= 0:
-        raise ValueError("annual_tool_cost must be greater than 0")
-    if working_weeks <= 0 or hours_per_week <= 0:
-        raise ValueError("working_weeks and hours_per_week must be greater than 0")
-    if not 0 <= hours_saved_per_week <= hours_per_week:
-        raise ValueError("hours_saved_per_week must be between 0 and hours_per_week")
+    if not math.isfinite(engineers) or engineers <= 0:
+        raise ValueError("--engineers must be greater than 0")
+    if not math.isfinite(loaded_annual_cost) or loaded_annual_cost <= 0:
+        raise ValueError("--loaded-cost must be a number greater than 0")
+    if not math.isfinite(annual_tool_cost) or annual_tool_cost <= 0:
+        raise ValueError("--tool-cost must be a number greater than 0")
+    if not math.isfinite(working_weeks) or not 1 <= working_weeks <= 52:
+        raise ValueError("--weeks must be between 1 and 52")
+    if not math.isfinite(hours_per_week) or hours_per_week <= 0:
+        raise ValueError("hours per week must be a number greater than 0")
+    if not math.isfinite(hours_saved_per_week) or not (
+        0 <= hours_saved_per_week <= hours_per_week
+    ):
+        raise ValueError(
+            f"--hours-saved must be between 0 and {hours_per_week:g} "
+            "(the hours in a working week)"
+        )
 
     hourly_cost = loaded_annual_cost / (working_weeks * hours_per_week)
     hours_saved_per_year = engineers * hours_saved_per_week * working_weeks
     annual_value = hours_saved_per_year * hourly_cost
     net_value = annual_value - annual_tool_cost
     roi_percent = net_value / annual_tool_cost * 100
+    # The tool cost recurs every year, so it only pays back if annual value exceeds it.
     payback_months = (
-        annual_tool_cost / (annual_value / 12) if annual_value > 0 else float("inf")
+        annual_tool_cost / (annual_value / 12)
+        if annual_value > annual_tool_cost
+        else float("inf")
     )
     return RoiResult(
         hourly_cost=hourly_cost,

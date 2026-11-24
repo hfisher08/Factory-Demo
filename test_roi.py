@@ -97,6 +97,54 @@ class CurrencyTest(unittest.TestCase):
 
 
 # === Calculation and validation tests ===
+class CalculationValidationTest(unittest.TestCase):
+    def test_payback_infinite_when_value_below_cost(self):
+        r = calculate_roi(100, 150_000, 1, 400_000)
+        self.assertAlmostEqual(r.annual_value, 375_000)
+        self.assertEqual(r.payback_months, float("inf"))
+
+    def test_payback_infinite_when_value_equals_cost(self):
+        r = calculate_roi(100, 200_000, 4, 2_000_000)
+        self.assertAlmostEqual(r.annual_value, 2_000_000)
+        self.assertEqual(r.payback_months, float("inf"))
+
+    def test_payback_finite_when_profitable(self):
+        self.assertAlmostEqual(calculate_roi(100, 200_000, 4, 500_000).payback_months, 3.0)
+
+    def test_weeks_bounds(self):
+        for weeks in (0, 53, 60):
+            with self.subTest(weeks=weeks), self.assertRaises(ValueError):
+                calculate_roi(1, 1, 1, 1, working_weeks=weeks)
+        for weeks in (1, 52):
+            with self.subTest(weeks=weeks):
+                self.assertEqual(calculate_roi(1, 1, 1, 1, working_weeks=weeks).working_weeks, weeks)
+
+    def test_rejects_non_finite_inputs(self):
+        base = dict(engineers=1, loaded_annual_cost=1, hours_saved_per_week=1,
+                    annual_tool_cost=1, working_weeks=46, hours_per_week=40)
+        for name in base:
+            for value in (float("nan"), float("inf"), float("-inf")):
+                kwargs = dict(base, **{name: value})
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    calculate_roi(**kwargs)
+
+    def test_error_messages_use_cli_names(self):
+        cases = [
+            (dict(engineers=0), "--engineers must be greater than 0"),
+            (dict(loaded_annual_cost=0), "--loaded-cost must be a number greater than 0"),
+            (dict(annual_tool_cost=float("nan")), "--tool-cost must be a number greater than 0"),
+            (dict(working_weeks=53), "--weeks must be between 1 and 52"),
+            (dict(hours_saved_per_week=41),
+             "--hours-saved must be between 0 and 40 (the hours in a working week)"),
+            (dict(hours_saved_per_week=36, hours_per_week=35),
+             "--hours-saved must be between 0 and 35 (the hours in a working week)"),
+        ]
+        base = dict(engineers=1, loaded_annual_cost=1, hours_saved_per_week=1, annual_tool_cost=1)
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(ValueError) as ctx:
+                    calculate_roi(**dict(base, **overrides))
+                self.assertEqual(str(ctx.exception), message)
 
 
 # === End of calculation and validation tests ===
