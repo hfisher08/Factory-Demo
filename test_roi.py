@@ -1,6 +1,10 @@
+import contextlib
+import io
+import os
+import tempfile
 import unittest
 
-from roi import calculate_roi, main, render_html
+from roi import calculate_roi, format_money, format_summary, main, render_html
 
 
 class CalculateRoiTest(unittest.TestCase):
@@ -43,6 +47,52 @@ class OutputTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             main(["--engineers", "0", "--loaded-cost", "1",
                   "--hours-saved", "1", "--tool-cost", "1"])
+        self.assertEqual(ctx.exception.code, 2)
+
+
+class CurrencyTest(unittest.TestCase):
+    def setUp(self):
+        self.result = calculate_roi(100, 200_000, 4, 500_000)
+
+    def test_format_money(self):
+        self.assertEqual(format_money(2_000_000), "$2,000,000")
+        self.assertEqual(format_money(2_000_000, "GBP"), "£2,000,000")
+        self.assertEqual(format_money(108.6956, "EUR", 2), "€108.70")
+        self.assertEqual(format_money(-1_500, "GBP"), "-£1,500")
+
+    def test_summary_defaults_to_usd(self):
+        summary = format_summary(self.result)
+        self.assertIn("Annual value created:   $2,000,000", summary)
+        self.assertNotIn("£", summary)
+
+    def test_summary_and_html_use_chosen_currency(self):
+        for code, symbol in (("GBP", "£"), ("EUR", "€")):
+            with self.subTest(currency=code):
+                summary = format_summary(self.result, code)
+                self.assertIn(f"Annual value created:   {symbol}2,000,000", summary)
+                self.assertIn(f"Engineer hourly cost:   {symbol}108.70", summary)
+                self.assertNotIn("$", summary)
+                page = render_html("Acme", self.result, code)
+                self.assertIn(f"<td>{symbol}1,500,000</td>", page)
+                self.assertNotIn("$", page)
+
+    def test_cli_writes_report_in_chosen_currency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "report.html")
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = main(["--engineers", "100", "--loaded-cost", "200000",
+                             "--hours-saved", "4", "--tool-cost", "500000",
+                             "--currency", "GBP", "--html", path])
+            self.assertEqual(code, 0)
+            self.assertIn("£2,000,000", out.getvalue())
+            with open(path, encoding="utf-8") as f:
+                self.assertIn("<td>£500,000</td>", f.read())
+
+    def test_cli_rejects_unknown_currency(self):
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as ctx:
+            main(["--engineers", "1", "--loaded-cost", "1", "--hours-saved", "1",
+                  "--tool-cost", "1", "--currency", "JPY"])
         self.assertEqual(ctx.exception.code, 2)
 
 

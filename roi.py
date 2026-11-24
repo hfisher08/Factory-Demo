@@ -55,27 +55,37 @@ def calculate_roi(
     )
 
 
-def format_summary(result: RoiResult) -> str:
+CURRENCY_SYMBOLS = {"USD": "$", "GBP": "£", "EUR": "€"}
+
+
+def format_money(amount: float, currency: str = "USD", decimals: int = 0) -> str:
+    symbol = CURRENCY_SYMBOLS[currency]
+    sign = "-" if amount < 0 else ""
+    return f"{sign}{symbol}{abs(amount):,.{decimals}f}"
+
+
+def format_summary(result: RoiResult, currency: str = "USD") -> str:
     payback = (
         "never" if result.payback_months == float("inf")
         else f"{result.payback_months:.1f} months"
     )
     return "\n".join([
-        f"Engineer hourly cost:   ${result.hourly_cost:,.2f}",
+        f"Engineer hourly cost:   {format_money(result.hourly_cost, currency, 2)}",
         f"Hours saved per year:   {result.hours_saved_per_year:,.0f}",
-        f"Annual value created:   ${result.annual_value:,.0f}",
-        f"Annual tool cost:       ${result.annual_cost:,.0f}",
-        f"Net annual value:       ${result.net_value:,.0f}",
+        f"Annual value created:   {format_money(result.annual_value, currency)}",
+        f"Annual tool cost:       {format_money(result.annual_cost, currency)}",
+        f"Net annual value:       {format_money(result.net_value, currency)}",
         f"ROI:                    {result.roi_percent:,.0f}%",
         f"Payback period:         {payback}",
     ])
 
 
-def render_html(customer: str, result: RoiResult) -> str:
+def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
     rows = "".join(
         f"<tr><th>{html.escape(label)}</th><td>{html.escape(value.strip())}</td></tr>"
         for label, value in (
-            line.split(":", 1) for line in format_summary(result).splitlines()
+            line.split(":", 1)
+            for line in format_summary(result, currency).splitlines()
         )
     )
     name = html.escape(customer)
@@ -116,6 +126,9 @@ def main(argv=None) -> int:
     parser.add_argument("--tool-cost", type=float, required=True,
                         help="Annual cost of the tool, in dollars")
     parser.add_argument("--weeks", type=int, default=46)
+    parser.add_argument("--currency", choices=sorted(CURRENCY_SYMBOLS), default="USD",
+                        help="Currency for all money inputs and outputs. "
+                             "Labels only: no exchange-rate conversion is applied.")
     parser.add_argument("--html", metavar="PATH", help="Also write an HTML report")
     args = parser.parse_args(argv)
 
@@ -126,10 +139,10 @@ def main(argv=None) -> int:
         parser.error(str(exc))
 
     print(f"ROI estimate for {args.customer}\n")
-    print(format_summary(result))
+    print(format_summary(result, args.currency))
     if args.html:
         with open(args.html, "w", encoding="utf-8") as f:
-            f.write(render_html(args.customer, result))
+            f.write(render_html(args.customer, result, args.currency))
         print(f"\nHTML report written to {args.html}")
     return 0
 
