@@ -247,6 +247,70 @@ class ReportOutputTest(unittest.TestCase):
 # === Command-line tests ===
 
 
+BASE_ARGS = ["--engineers", "100", "--loaded-cost", "200000",
+             "--tool-cost", "500000"]
+
+
+def run_cli(args):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(args)
+    return code, out.getvalue(), err.getvalue()
+
+
+class CommandLineTest(unittest.TestCase):
+    def test_warns_when_hours_saved_above_20_percent(self):
+        code, out, err = run_cli(BASE_ARGS + ["--hours-saved", "10"])
+        self.assertEqual(code, 0)
+        self.assertIn("Warning: --hours-saved 10 is 25% of a 40-hour week", err)
+        self.assertNotIn("Warning", out)
+        self.assertIn("ROI estimate for", out)
+
+    def test_no_warning_at_exactly_8_hours(self):
+        code, _, err = run_cli(BASE_ARGS + ["--hours-saved", "8"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+
+    def test_help_uses_currency_not_dollars(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            main(["--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        text = " ".join(out.getvalue().split())
+        self.assertNotIn("dollars", text)
+        self.assertIn("in the chosen --currency", text)
+
+    def test_bad_html_path_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "missing", "report.html")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as ctx:
+                main(BASE_ARGS + ["--hours-saved", "4", "--html", path])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn(f"could not write HTML report to {path}: "
+                      "No such file or directory", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertNotIn("ROI estimate", out.getvalue())
+
+    def test_blank_customer_falls_back_to_prospect(self):
+        for name in ("", "   "):
+            with self.subTest(name=repr(name)), tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "report.html")
+                code, out, _ = run_cli(BASE_ARGS + ["--hours-saved", "4",
+                                                    "--customer", name, "--html", path])
+                self.assertEqual(code, 0)
+                self.assertIn("ROI estimate for Prospect\n", out)
+                with open(path, encoding="utf-8") as f:
+                    page = f.read()
+                self.assertIn("<title>ROI estimate for Prospect</title>", page)
+                self.assertIn("Prospect</h1>", page)
+
+    def test_customer_name_is_stripped(self):
+        _, out, _ = run_cli(BASE_ARGS + ["--hours-saved", "4", "--customer", "  Acme  "])
+        self.assertIn("ROI estimate for Acme\n", out)
+
+
 # === End of command-line tests ===
 
 
