@@ -22,7 +22,7 @@ adoption is 50% in year one, 80% in year two and 100% in year three. Change it w
 
 The tool cost is charged in full every year, paid at the start of the year, even while
 adoption ramps up. "Payback in year one" is how many months of year-one value it takes
-to cover that year's cost. The full-adoption figures (year 3 onwards) are also shown,
-and are a best case.
+to cover that year's cost. The figures at full (100%) adoption are also shown, and
+are a best case. Three-year figures are simple totals and are not discounted.
 
 Run the tests with `python3 -m unittest -v`.

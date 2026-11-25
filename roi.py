@@ -1,6 +1,7 @@
 """Estimate the value of AI agent adoption for an engineering team."""
 
 import argparse
+import decimal
 import html
 import math
 import sys
@@ -71,7 +72,8 @@ def _validate_ramp(ramp: Sequence[float]) -> Tuple[float, float, float]:
             raise ValueError(RAMP_ERROR)
         if _too_large(v) or not _is_finite(v) or not 0 <= v <= 100:
             raise ValueError(RAMP_ERROR)
-    return (float(values[0]), float(values[1]), float(values[2]))
+    # Adding 0.0 turns -0.0 into 0.0 so it never displays as "-0%".
+    return tuple(float(v) + 0.0 for v in values)
 
 
 def parse_ramp(text: str) -> Tuple[float, float, float]:
@@ -182,8 +184,10 @@ def format_money(amount: float, currency: str = "USD", decimals: int = 0) -> str
 
 
 def format_percent(value: float) -> str:
-    # Rounding to an int first means values like -0.01 show as "0%", not "-0%".
-    return f"{int(round(value)):,}%"
+    # Round halves away from zero (187.5 -> 188, 12.5 -> 13), as a reader checking by
+    # hand would; Python's round() would give 12. int() also turns -0 into 0.
+    rounded = decimal.Decimal(value).quantize(decimal.Decimal(1), decimal.ROUND_HALF_UP)
+    return f"{int(rounded):,}%"
 
 
 def format_number(value: float) -> str:
@@ -224,7 +228,7 @@ def summary_rows(result: RoiResult, currency: str = "USD"):
         ("Estimated value of time saved", format_money(result.annual_value, currency)),
         ("Annual tool cost", format_money(result.annual_cost, currency)),
         ("Estimated net annual value", format_money(result.net_value, currency)),
-        ("ROI", format_percent(result.roi_percent)),
+        ("Annual ROI at full adoption", format_percent(result.roi_percent)),
         ("Payback at full adoption", format_payback(result.payback_months)),
     ]
 
@@ -251,8 +255,22 @@ def input_rows(result: RoiResult, currency: str = "USD"):
 
 ROUNDING_NOTE = (
     "Figures are rounded for display. Totals are calculated from unrounded values, "
-    "so displayed figures may not multiply out exactly."
+    "so displayed figures may not multiply or add up exactly."
 )
+
+
+def full_adoption_heading(result: RoiResult) -> str:
+    if result.ramp[2] == 100:
+        return "At full adoption (year 3 onwards)"
+    return "At full adoption (100%)"
+
+
+def headline_subline(result: RoiResult) -> str:
+    ramp = f"Adoption by year: {format_ramp(result.ramp, ' → ')}."
+    full = format_percent(result.roi_percent)
+    if result.ramp[2] == 100:
+        return f"{ramp} At full adoption: {full} a year."
+    return f"{ramp} Full adoption is not reached; at 100% the annual ROI would be {full}."
 
 
 def caveats(result: RoiResult) -> Tuple[str, ...]:
@@ -263,6 +281,8 @@ def caveats(result: RoiResult) -> Tuple[str, ...]:
         "a best case.",
         "It treats the tool cost as recurring every year, paid at the start of each "
         "year, at the full price even while adoption ramps up.",
+        "Three-year figures are simple totals; they are not discounted for the time "
+        "value of money.",
         "It excludes implementation, training and review costs.",
     )
 
@@ -307,7 +327,8 @@ def _three_year_table(result: RoiResult, currency: str) -> str:
 
     money = lambda amount: format_money(amount, currency)  # noqa: E731
     head = "".join(f"<th>{h}</th>" for h in (
-        "Year", "Adoption", "Value of time saved", "Tool cost", "Net", "Cumulative net"))
+        "Year", "Adoption", "Estimated value of time saved", "Tool cost", "Net",
+        "Cumulative net"))
     body = "".join(
         f"<tr><th>Year {y.year}</th>"
         + cells((format_adoption(y.adoption_percent), money(y.value), money(y.cost),
@@ -334,10 +355,8 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
     )
     caveat_items = "".join(f"<li>{html.escape(c)}</li>" for c in caveats(result))
     headline = html.escape(format_percent(result.three_year_roi_percent))
-    subline = html.escape(
-        f"Adoption ramps {format_ramp(result.ramp, ' → ')}. "
-        f"At full adoption: {format_percent(result.roi_percent)} a year."
-    )
+    subline = html.escape(headline_subline(result))
+    full_heading = html.escape(full_adoption_heading(result))
     name = html.escape(customer)
     return f"""<!doctype html>
 <html lang="en">
@@ -374,7 +393,7 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 <h2>Three-year view</h2>
 {three_year}
 <table class="three-year-summary">{three_year_summary}</table>
-<h2>At full adoption (year 3 onwards)</h2>
+<h2>{full_heading}</h2>
 <table class="results">{rows}</table>
 <p class="note">{html.escape(ROUNDING_NOTE)}</p>
 <h2>Inputs and assumptions</h2>
@@ -439,10 +458,10 @@ def main(argv=None) -> int:
                          f"{exc.strerror or exc}")
 
     print(f"ROI estimate for {customer}\n")
-    print("At full adoption (year 3 onwards)")
-    print(format_summary(result, args.currency))
-    print()
     print(format_three_year(result, args.currency))
+    print()
+    print(full_adoption_heading(result))
+    print(format_summary(result, args.currency))
     print(f"\n{ROUNDING_NOTE}")
     print("Estimate only: it assumes every hour saved becomes productive work and "
           f"adoption of {format_ramp_words(result.ramp)} in years one to three. "

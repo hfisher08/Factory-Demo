@@ -4,8 +4,8 @@ import os
 import tempfile
 import unittest
 
-from roi import (calculate_roi, format_money, format_summary, format_three_year, main,
-                 parse_ramp, render_html)
+from roi import (calculate_roi, format_money, format_percent, format_summary,
+                 format_three_year, main, parse_ramp, render_html)
 
 
 class CalculateRoiTest(unittest.TestCase):
@@ -298,9 +298,9 @@ class ReportOutputTest(unittest.TestCase):
         page = render_html("Acme", r)
         self.assertNotIn("-0%", summary)
         self.assertNotIn("-0%", page)
-        self.assertIn("ROI:", summary)
+        self.assertIn("Annual ROI at full adoption:", summary)
         self.assertTrue(summary.splitlines()[5].endswith(" 0%"))
-        self.assertIn("<tr><th>ROI</th><td>0%</td></tr>", page)
+        self.assertIn("<tr><th>Annual ROI at full adoption</th><td>0%</td></tr>", page)
         self.assertIn("At full adoption: 0% a year.", page)
 
     def test_negative_roi_keeps_sign(self):
@@ -353,7 +353,7 @@ class ThreeYearReportTest(unittest.TestCase):
     def test_headline_is_three_year_roi(self):
         page = render_html("Acme", self.result, "GBP")
         self.assertIn('<div class="big">188% three-year ROI</div>', page)
-        self.assertIn("Adoption ramps 50% → 80% → 100%. At full adoption: 275% a year.", page)
+        self.assertIn("Adoption by year: 50% → 80% → 100%. At full adoption: 275% a year.", page)
         self.assertIn("<h2>At full adoption (year 3 onwards)</h2>", page)
         self.assertIn("<tr><th>Payback at full adoption</th><td>3.2 months</td></tr>", page)
 
@@ -393,6 +393,42 @@ class ThreeYearReportTest(unittest.TestCase):
         for output in (render_html("Acme", r), format_three_year(r), format_summary(r)):
             self.assertNotIn("-$0", output)
             self.assertNotIn("-0%", output)
+
+    def test_ramp_below_100_in_year_three_does_not_claim_full_adoption(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(25, 60, 90))
+        page = render_html("Acme", r, "GBP")
+        self.assertNotIn("year 3 onwards", page)
+        self.assertIn("<h2>At full adoption (100%)</h2>", page)
+        self.assertIn("Adoption by year: 25% → 60% → 90%. Full adoption is not reached; "
+                      "at 100% the annual ROI would be 275%.", page)
+        self.assertNotIn("At full adoption: 275% a year", page)
+
+    def test_falling_ramp_is_not_described_as_ramping(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(80, 50, 100))
+        page = render_html("Acme", r)
+        self.assertIn("Adoption by year: 80% → 50% → 100%.", page)
+        self.assertNotIn("Adoption ramps", page)
+
+    def test_discount_caveat_and_rounding_note(self):
+        page = render_html("Acme", self.result)
+        self.assertIn("Three-year figures are simple totals; they are not discounted for "
+                      "the time value of money.", page)
+        self.assertIn("may not multiply or add up exactly", page)
+
+    def test_three_year_table_uses_estimated_label(self):
+        table = render_html("Acme", self.result).split('<table class="three-year">', 1)[1]
+        self.assertIn("<th>Estimated value of time saved</th>", table.split("</thead>", 1)[0])
+
+    def test_percent_rounds_halves_up(self):
+        for value, expected in ((187.5, "188%"), (186.5, "187%"), (12.5, "13%"),
+                                (-12.5, "-13%"), (-0.01, "0%"), (0.49, "0%")):
+            with self.subTest(value=value):
+                self.assertEqual(format_percent(value), expected)
+
+    def test_negative_zero_adoption_shows_as_zero(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(-0.0, 80, 100))
+        self.assertNotIn("-0%", render_html("Acme", r))
+        self.assertNotIn("-0%", format_three_year(r))
 
     def test_terminal_three_year_view(self):
         out = format_three_year(self.result, "GBP")
@@ -539,6 +575,17 @@ class RampCommandLineTest(unittest.TestCase):
                 self.assertEqual(ctx.exception.code, 2)
                 self.assertIn("--ramp must be three percentages from 0 to 100", err.getvalue())
                 self.assertNotIn("Traceback", err.getvalue())
+
+    def test_terminal_leads_with_three_year_view(self):
+        _, out, _ = run_cli(self.ARGS)
+        self.assertLess(out.index("Three-year ROI:"), out.index("Annual ROI at full adoption:"))
+        self.assertIn("\nAt full adoption (year 3 onwards)\n", out)
+
+    def test_negative_zero_ramp_from_cli(self):
+        code, out, _ = run_cli(self.ARGS + ["--ramp=-0,80,100"])
+        self.assertEqual(code, 0)
+        self.assertIn("Year 1 at 0% adoption", out)
+        self.assertNotIn("-0%", out)
 
     def test_ramp_help(self):
         out = io.StringIO()
