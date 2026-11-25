@@ -23,3 +23,6 @@ and can write an HTML report. Tests live in `test_roi.py`.
 - The report's inline JavaScript recalculates every figure live in the browser. It
   must mirror `calculate_roi` and the `format_*` helpers, and stay free of external
   dependencies. When you change a calculation, wording or format, change both sides.
+- `FACTORY_WORDMARK` and `FACTORY_MARK` are the official logos from factory.ai,
+  embedded as inline SVG so reports stay self-contained. Update them if the brand
+  changes; keep `fill="currentColor"` so they follow the page's text colour.

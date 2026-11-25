@@ -15,6 +15,8 @@ The HTML report is interactive: open it in a browser and edit any input (enginee
 costs, hours saved, adoption ramp, currency) and every figure updates instantly.
 The recalculation runs entirely in the page; nothing you type is sent anywhere.
 Use it live on a call when a customer wants to test the assumptions.
+The report carries Factory branding (logo in the header, Droid credit in the
+footer); the logos are inline SVG, so the file stays self-contained.
 
 Add `--currency GBP` or `--currency EUR` to label money in pounds or euros (default `USD`).
 Inputs are taken in that currency; no exchange-rate conversion is applied.

@@ -490,6 +490,29 @@ class InteractiveReportTest(unittest.TestCase):
         self.assertIn("Nothing you type is sent anywhere.", self.page)
 
 
+class ReportBrandingTest(unittest.TestCase):
+    def setUp(self):
+        self.page = render_html("Acme Bank UK",
+                                calculate_roi(100, 150_000, 4, 400_000), "GBP")
+
+    def test_header_has_factory_wordmark(self):
+        self.assertIn('<header class="brand">', self.page)
+        self.assertIn('viewBox="0 0 127 19"', self.page)
+        self.assertIn("<title>Factory</title>", self.page)
+
+    def test_footer_credits_droid(self):
+        self.assertIn('<footer class="built">', self.page)
+        self.assertIn("Produced with Factory Droid", self.page)
+        self.assertIn('href="https://factory.ai"', self.page)
+        self.assertIn('viewBox="0 0 67 65"', self.page)
+
+    def test_logos_follow_text_colour_and_are_inline(self):
+        self.assertIn('fill="currentColor"', self.page)
+        # Inline SVG keeps the report self-contained: no external images.
+        self.assertNotIn("<img", self.page)
+        self.assertNotIn("logo.svg", self.page)
+
+
 # === End of report and summary output tests ===
 
 
