@@ -5,6 +5,17 @@ import html
 import math
 import sys
 from dataclasses import dataclass
+from typing import List, Sequence, Tuple
+
+
+@dataclass
+class YearResult:
+    year: int
+    adoption_percent: float
+    value: float
+    cost: float
+    net: float
+    cumulative_net: float
 
 
 @dataclass
@@ -21,8 +32,17 @@ class RoiResult:
     hours_saved_per_week: float
     working_weeks: int
     hours_per_week: float
+    ramp: Tuple[float, float, float]
+    years: List[YearResult]
+    three_year_value: float
+    three_year_cost: float
+    three_year_net: float
+    three_year_roi_percent: float
+    first_year_payback_months: float
 
 
+DEFAULT_RAMP = (50.0, 80.0, 100.0)
+RAMP_ERROR = "--ramp must be three percentages from 0 to 100, for example 50,80,100"
 TOO_LARGE = "inputs are too large to produce a meaningful estimate"
 
 
@@ -39,6 +59,37 @@ def _is_finite(value) -> bool:
     return math.isfinite(value)
 
 
+def _validate_ramp(ramp: Sequence[float]) -> Tuple[float, float, float]:
+    try:
+        values = tuple(ramp)
+    except TypeError:
+        raise ValueError(RAMP_ERROR) from None
+    if len(values) != 3:
+        raise ValueError(RAMP_ERROR)
+    for v in values:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(RAMP_ERROR)
+        if _too_large(v) or not _is_finite(v) or not 0 <= v <= 100:
+            raise ValueError(RAMP_ERROR)
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def parse_ramp(text: str) -> Tuple[float, float, float]:
+    try:
+        values = [float(part) for part in text.split(",")]
+    except ValueError:
+        raise ValueError(RAMP_ERROR) from None
+    return _validate_ramp(values)
+
+
+def _payback_months(annual_tool_cost: float, annual_value: float) -> float:
+    # The licence is paid at the start of each year, so it only pays back within
+    # a year if that year's value exceeds the cost.
+    if annual_value > annual_tool_cost:
+        return annual_tool_cost / (annual_value / 12)
+    return float("inf")
+
+
 def calculate_roi(
     engineers: int,
     loaded_annual_cost: float,
@@ -46,6 +97,7 @@ def calculate_roi(
     annual_tool_cost: float,
     working_weeks: int = 46,
     hours_per_week: float = 40,
+    ramp: Sequence[float] = DEFAULT_RAMP,
 ) -> RoiResult:
     inputs = (engineers, loaded_annual_cost, hours_saved_per_week, annual_tool_cost,
               working_weeks, hours_per_week)
@@ -68,20 +120,32 @@ def calculate_roi(
             f"--hours-saved must be between 0 and {hours_per_week:g} "
             "(the hours in a working week)"
         )
+    ramp = _validate_ramp(ramp)
 
     hourly_cost = loaded_annual_cost / (working_weeks * hours_per_week)
     hours_saved_per_year = engineers * hours_saved_per_week * working_weeks
     annual_value = hours_saved_per_year * hourly_cost
     net_value = annual_value - annual_tool_cost
     roi_percent = net_value / annual_tool_cost * 100
-    # The tool cost recurs every year, so it only pays back if annual value exceeds it.
-    payback_months = (
-        annual_tool_cost / (annual_value / 12)
-        if annual_value > annual_tool_cost
-        else float("inf")
-    )
+    payback_months = _payback_months(annual_tool_cost, annual_value)
+
+    years = []
+    cumulative_net = 0.0
+    for year, adoption in enumerate(ramp, start=1):
+        value = annual_value * adoption / 100
+        net = value - annual_tool_cost
+        cumulative_net += net
+        years.append(YearResult(year, adoption, value, annual_tool_cost, net, cumulative_net))
+    three_year_value = sum(y.value for y in years)
+    three_year_cost = annual_tool_cost * len(years)
+    three_year_net = three_year_value - three_year_cost
+    three_year_roi_percent = three_year_net / three_year_cost * 100
+    first_year_payback_months = _payback_months(annual_tool_cost, years[0].value)
+
     # Finite inputs can still overflow, e.g. a loaded cost of 1e308.
-    if not all(_is_finite(v) for v in (hourly_cost, annual_value, net_value, roi_percent)):
+    if not all(_is_finite(v) for v in (hourly_cost, annual_value, net_value, roi_percent,
+                                       three_year_value, three_year_cost,
+                                       three_year_net, three_year_roi_percent)):
         raise ValueError(TOO_LARGE)
     return RoiResult(
         hourly_cost=hourly_cost,
@@ -96,6 +160,13 @@ def calculate_roi(
         hours_saved_per_week=hours_saved_per_week,
         working_weeks=working_weeks,
         hours_per_week=hours_per_week,
+        ramp=ramp,
+        years=years,
+        three_year_value=three_year_value,
+        three_year_cost=three_year_cost,
+        three_year_net=three_year_net,
+        three_year_roi_percent=three_year_roi_percent,
+        first_year_payback_months=first_year_payback_months,
     )
 
 
@@ -121,10 +192,29 @@ def format_number(value: float) -> str:
     return f"{value:,.6f}".rstrip("0").rstrip(".")
 
 
-def format_payback(payback_months: float) -> str:
+def format_adoption(value: float) -> str:
+    return f"{format_number(value)}%"
+
+
+def format_ramp(ramp: Sequence[float], separator: str = " / ") -> str:
+    return separator.join(format_adoption(v) for v in ramp)
+
+
+def format_ramp_words(ramp: Sequence[float]) -> str:
+    first, second, third = (format_adoption(v) for v in ramp)
+    return f"{first}, {second} and {third}"
+
+
+def format_payback(payback_months: float,
+                   never: str = "Does not pay back (value does not exceed cost)") -> str:
     if math.isinf(payback_months):
-        return "Does not pay back (value does not exceed cost)"
+        return never
     return f"{payback_months:.1f} months"
+
+
+def format_first_year_payback(result: RoiResult) -> str:
+    return format_payback(result.first_year_payback_months,
+                          "Does not pay back in year one")
 
 
 def summary_rows(result: RoiResult, currency: str = "USD"):
@@ -135,7 +225,14 @@ def summary_rows(result: RoiResult, currency: str = "USD"):
         ("Annual tool cost", format_money(result.annual_cost, currency)),
         ("Estimated net annual value", format_money(result.net_value, currency)),
         ("ROI", format_percent(result.roi_percent)),
-        ("Payback period", format_payback(result.payback_months)),
+        ("Payback at full adoption", format_payback(result.payback_months)),
+    ]
+
+
+def three_year_summary_rows(result: RoiResult):
+    return [
+        ("Three-year ROI", format_percent(result.three_year_roi_percent)),
+        ("Payback in year one", format_first_year_payback(result)),
     ]
 
 
@@ -148,6 +245,7 @@ def input_rows(result: RoiResult, currency: str = "USD"):
         ("Working weeks per year", format_number(result.working_weeks)),
         ("Hours per working week", format_number(result.hours_per_week)),
         ("Annual tool cost", format_money(result.annual_cost, currency)),
+        ("Adoption ramp (years 1–3)", format_ramp(result.ramp)),
     ]
 
 
@@ -156,19 +254,44 @@ ROUNDING_NOTE = (
     "so displayed figures may not multiply out exactly."
 )
 
-CAVEATS = (
-    "It assumes every hour saved becomes productive work.",
-    "It assumes full adoption from day one with no ramp-up, so the payback "
-    "period is a best case.",
-    "It excludes implementation, training and review costs.",
-    "It treats the tool cost as recurring every year.",
-)
+
+def caveats(result: RoiResult) -> Tuple[str, ...]:
+    return (
+        "It assumes every hour saved becomes productive work.",
+        f"The three-year view assumes adoption of {format_ramp_words(result.ramp)} in "
+        "years one to three. The full-adoption figures assume no ramp-up, so they are "
+        "a best case.",
+        "It treats the tool cost as recurring every year, paid at the start of each "
+        "year, at the full price even while adoption ramps up.",
+        "It excludes implementation, training and review costs.",
+    )
+
+
+def _aligned(rows) -> str:
+    width = max(len(label) for label, _ in rows) + 2
+    return "\n".join(f"{label + ':':<{width}}{value}" for label, value in rows)
 
 
 def format_summary(result: RoiResult, currency: str = "USD") -> str:
-    rows = summary_rows(result, currency)
-    width = max(len(label) for label, _ in rows) + 2
-    return "\n".join(f"{label + ':':<{width}}{value}" for label, value in rows)
+    return _aligned(summary_rows(result, currency))
+
+
+def format_three_year(result: RoiResult, currency: str = "USD") -> str:
+    money = lambda amount: format_money(amount, currency)  # noqa: E731
+    rows = [
+        (f"Year {y.year} at {format_adoption(y.adoption_percent)} adoption",
+         f"value {money(y.value)}, cost {money(y.cost)}, net {money(y.net)}, "
+         f"cumulative net {money(y.cumulative_net)}")
+        for y in result.years
+    ]
+    rows.append(("Three-year total",
+                 f"value {money(result.three_year_value)}, "
+                 f"cost {money(result.three_year_cost)}, "
+                 f"net {money(result.three_year_net)}"))
+    rows.extend(three_year_summary_rows(result))
+    heading = (f"Three-year view (adoption {format_ramp(result.ramp, ' → ')}, "
+               "tool cost fixed each year)")
+    return f"{heading}\n{_aligned(rows)}"
 
 
 def _table_rows(rows) -> str:
@@ -178,15 +301,43 @@ def _table_rows(rows) -> str:
     )
 
 
+def _three_year_table(result: RoiResult, currency: str) -> str:
+    def cells(values):
+        return "".join(f"<td>{html.escape(v)}</td>" for v in values)
+
+    money = lambda amount: format_money(amount, currency)  # noqa: E731
+    head = "".join(f"<th>{h}</th>" for h in (
+        "Year", "Adoption", "Value of time saved", "Tool cost", "Net", "Cumulative net"))
+    body = "".join(
+        f"<tr><th>Year {y.year}</th>"
+        + cells((format_adoption(y.adoption_percent), money(y.value), money(y.cost),
+                 money(y.net), money(y.cumulative_net)))
+        + "</tr>"
+        for y in result.years
+    )
+    total = ('<tr class="total"><th>Total</th>'
+             + cells(("", money(result.three_year_value), money(result.three_year_cost),
+                      money(result.three_year_net), ""))
+             + "</tr>")
+    return (f'<table class="three-year"><thead><tr>{head}</tr></thead>'
+            f"<tbody>{body}{total}</tbody></table>")
+
+
 def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
+    three_year = _three_year_table(result, currency)
+    three_year_summary = _table_rows(three_year_summary_rows(result))
     rows = _table_rows(summary_rows(result, currency))
     inputs = _table_rows(input_rows(result, currency))
     currency_note = html.escape(
         f"All amounts are in {currency} ({CURRENCY_SYMBOLS[currency]}). "
         "No exchange-rate conversion is applied."
     )
-    caveats = "".join(f"<li>{html.escape(c)}</li>" for c in CAVEATS)
-    roi = html.escape(format_percent(result.roi_percent))
+    caveat_items = "".join(f"<li>{html.escape(c)}</li>" for c in caveats(result))
+    headline = html.escape(format_percent(result.three_year_roi_percent))
+    subline = html.escape(
+        f"Adoption ramps {format_ramp(result.ramp, ' → ')}. "
+        f"At full adoption: {format_percent(result.roi_percent)} a year."
+    )
     name = html.escape(customer)
     return f"""<!doctype html>
 <html lang="en">
@@ -194,7 +345,7 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 <meta charset="utf-8">
 <title>ROI estimate for {name}</title>
 <style>
-  body {{ font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 640px;
+  body {{ font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 720px;
          margin: 48px auto; color: #1c1917; }}
   h1 {{ font-size: 24px; margin-bottom: 4px; }}
   h2 {{ font-size: 18px; margin: 40px 0 0; }}
@@ -202,7 +353,14 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
   table {{ width: 100%; border-collapse: collapse; margin-top: 24px; }}
   th, td {{ padding: 12px 8px; border-bottom: 1px solid #e7e5e4; text-align: left; }}
   td {{ text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }}
+  .three-year {{ font-size: 14px; }}
+  .three-year thead th {{ text-align: right; color: #57534e; font-weight: 600; }}
+  .three-year thead th:first-child {{ text-align: left; }}
+  .three-year td {{ font-weight: 400; }}
+  .three-year .total th, .three-year .total td {{ font-weight: 700;
+         border-top: 2px solid #1c1917; }}
   .big {{ font-size: 40px; font-weight: 700; color: #ea580c; margin: 24px 0 0; }}
+  .sub {{ font-size: 15px; margin-top: 4px; }}
   .note {{ font-size: 14px; margin-top: 12px; }}
   ul {{ color: #57534e; padding-left: 20px; }}
   li {{ margin: 6px 0; }}
@@ -211,7 +369,12 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 <body>
 <h1>AI agent ROI estimate: {name}</h1>
 <p>Illustrative estimate. Results depend entirely on the inputs used.</p>
-<div class="big">{roi} ROI</div>
+<div class="big">{headline} three-year ROI</div>
+<p class="sub">{subline}</p>
+<h2>Three-year view</h2>
+{three_year}
+<table class="three-year-summary">{three_year_summary}</table>
+<h2>At full adoption (year 3 onwards)</h2>
 <table class="results">{rows}</table>
 <p class="note">{html.escape(ROUNDING_NOTE)}</p>
 <h2>Inputs and assumptions</h2>
@@ -219,7 +382,7 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 <p class="note">{currency_note}</p>
 <h2>Caveats</h2>
 <p>This is an estimate, not a forecast.</p>
-<ul class="caveats">{caveats}</ul>
+<ul class="caveats">{caveat_items}</ul>
 </body>
 </html>
 """
@@ -237,6 +400,9 @@ def main(argv=None) -> int:
                         help="Annual cost of the tool, in the chosen --currency")
     parser.add_argument("--weeks", type=int, default=46,
                         help="Working weeks per year, from 1 to 52 (default 46)")
+    parser.add_argument("--ramp", default="50,80,100",
+                        help="Adoption percentages for years one, two and three, "
+                             "separated by commas (default 50,80,100)")
     parser.add_argument("--currency", choices=sorted(CURRENCY_SYMBOLS), default="USD",
                         help="Currency for all money inputs and outputs. "
                              "Labels only: no exchange-rate conversion is applied.")
@@ -246,8 +412,9 @@ def main(argv=None) -> int:
     customer = args.customer.strip() or "Prospect"
 
     try:
+        ramp = parse_ramp(args.ramp)
         result = calculate_roi(args.engineers, args.loaded_cost, args.hours_saved,
-                               args.tool_cost, working_weeks=args.weeks)
+                               args.tool_cost, working_weeks=args.weeks, ramp=ramp)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -272,10 +439,14 @@ def main(argv=None) -> int:
                          f"{exc.strerror or exc}")
 
     print(f"ROI estimate for {customer}\n")
+    print("At full adoption (year 3 onwards)")
     print(format_summary(result, args.currency))
+    print()
+    print(format_three_year(result, args.currency))
     print(f"\n{ROUNDING_NOTE}")
-    print("Estimate only: it assumes every hour saved becomes productive work and full "
-          "adoption from day one. Use --html for the full inputs and caveats.")
+    print("Estimate only: it assumes every hour saved becomes productive work and "
+          f"adoption of {format_ramp_words(result.ramp)} in years one to three. "
+          "Use --html for the full inputs and caveats.")
     if args.html is not None:
         print(f"\nHTML report written to {args.html}")
     return 0

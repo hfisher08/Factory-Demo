@@ -4,7 +4,8 @@ import os
 import tempfile
 import unittest
 
-from roi import calculate_roi, format_money, format_summary, main, render_html
+from roi import (calculate_roi, format_money, format_summary, format_three_year, main,
+                 parse_ramp, render_html)
 
 
 class CalculateRoiTest(unittest.TestCase):
@@ -160,6 +161,76 @@ class CalculationValidationTest(unittest.TestCase):
                          "inputs are too large to produce a meaningful estimate")
 
 
+class ThreeYearCalculationTest(unittest.TestCase):
+    def test_acme_gbp_example(self):
+        # Full-adoption value is 100 * 4 * 150000 / 40 = 1,500,000 a year.
+        r = calculate_roi(100, 150_000, 4, 400_000)
+        self.assertEqual(r.ramp, (50.0, 80.0, 100.0))
+        self.assertEqual([y.adoption_percent for y in r.years], [50, 80, 100])
+        for y, value, net, cumulative in zip(
+                r.years,
+                (750_000, 1_200_000, 1_500_000),
+                (350_000, 800_000, 1_100_000),
+                (350_000, 1_150_000, 2_250_000)):
+            with self.subTest(year=y.year):
+                self.assertAlmostEqual(y.value, value)
+                self.assertAlmostEqual(y.cost, 400_000)
+                self.assertAlmostEqual(y.net, net)
+                self.assertAlmostEqual(y.cumulative_net, cumulative)
+        self.assertAlmostEqual(r.three_year_value, 3_450_000)
+        self.assertAlmostEqual(r.three_year_cost, 1_200_000)
+        self.assertAlmostEqual(r.three_year_net, 2_250_000)
+        self.assertAlmostEqual(r.three_year_roi_percent, 187.5)
+        self.assertAlmostEqual(r.first_year_payback_months, 6.4)
+        # Full-adoption figures are unchanged by the ramp.
+        self.assertAlmostEqual(r.roi_percent, 275)
+        self.assertAlmostEqual(r.payback_months, 3.2)
+
+    def test_worked_usd_example(self):
+        r = calculate_roi(100, 200_000, 4, 500_000)
+        self.assertAlmostEqual(r.three_year_value, 4_600_000)
+        self.assertAlmostEqual(r.three_year_net, 3_100_000)
+        self.assertAlmostEqual(r.three_year_roi_percent, 3_100_000 / 1_500_000 * 100)
+        self.assertAlmostEqual(r.first_year_payback_months, 6.0)
+
+    def test_custom_ramp(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(25, 60, 90))
+        self.assertEqual([y.value for y in r.years], [375_000, 900_000, 1_350_000])
+        self.assertAlmostEqual(r.three_year_roi_percent, (2_625_000 - 1_200_000) / 1_200_000 * 100)
+        self.assertAlmostEqual(r.first_year_payback_months, float("inf"))
+
+    def test_zero_ramp(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(0, 0, 0))
+        self.assertEqual(r.three_year_value, 0)
+        self.assertEqual(r.three_year_roi_percent, -100)
+        self.assertEqual(r.first_year_payback_months, float("inf"))
+
+    def test_year_one_value_at_or_below_cost_never_pays_back_in_year_one(self):
+        # Year one at 50% of 800,000 equals the 400,000 cost exactly.
+        equal = calculate_roi(100, 80_000, 4, 400_000)
+        self.assertAlmostEqual(equal.years[0].value, 400_000)
+        self.assertEqual(equal.first_year_payback_months, float("inf"))
+        below = calculate_roi(100, 150_000, 1, 400_000)
+        self.assertEqual(below.first_year_payback_months, float("inf"))
+
+    def test_rejects_invalid_ramp(self):
+        message = "--ramp must be three percentages from 0 to 100, for example 50,80,100"
+        for ramp in ((50, 80), (50, 80, 100, 100), (50, 80, 101), (-1, 80, 100),
+                     (float("nan"), 80, 100), (50, float("inf"), 100),
+                     ("50", 80, 100), (True, 80, 100), (10 ** 400, 80, 100), 50):
+            with self.subTest(ramp=ramp):
+                with self.assertRaises(ValueError) as ctx:
+                    calculate_roi(100, 150_000, 4, 400_000, ramp=ramp)
+                self.assertEqual(str(ctx.exception), message)
+
+    def test_parse_ramp(self):
+        self.assertEqual(parse_ramp("50,80,100"), (50.0, 80.0, 100.0))
+        self.assertEqual(parse_ramp(" 33.5 , 70, 100 "), (33.5, 70.0, 100.0))
+        for text in ("", "50,80", "50,80,abc", "50;80;100", "50,80,1e400", "nan,80,100"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_ramp(text)
+
+
 # === End of calculation and validation tests ===
 
 
@@ -210,7 +281,10 @@ class ReportOutputTest(unittest.TestCase):
         page = render_html("Acme", self.result)
         self.assertIn("<h2>Caveats</h2>", page)
         for phrase in ("every hour saved becomes productive work",
-                       "no ramp-up, so the payback period is a best case",
+                       "adoption of 50%, 80% and 100% in years one to three",
+                       "full-adoption figures assume no ramp-up, so they are a best case",
+                       "paid at the start of each year, at the full price even while "
+                       "adoption ramps up",
                        "excludes implementation, training and review costs",
                        "tool cost as recurring every year"):
             with self.subTest(phrase=phrase):
@@ -226,8 +300,8 @@ class ReportOutputTest(unittest.TestCase):
         self.assertNotIn("-0%", page)
         self.assertIn("ROI:", summary)
         self.assertTrue(summary.splitlines()[5].endswith(" 0%"))
-        self.assertIn('<div class="big">0% ROI</div>', page)
         self.assertIn("<tr><th>ROI</th><td>0%</td></tr>", page)
+        self.assertIn("At full adoption: 0% a year.", page)
 
     def test_negative_roi_keeps_sign(self):
         r = calculate_roi(10, 150_000, 0, 50_000)
@@ -270,6 +344,63 @@ class ReportOutputTest(unittest.TestCase):
         page = render_html('<b>"A&B"</b>', self.result, "GBP")
         self.assertNotIn("<b>", page)
         self.assertEqual(page.count("&lt;b&gt;&quot;A&amp;B&quot;&lt;/b&gt;"), 2)
+
+
+class ThreeYearReportTest(unittest.TestCase):
+    def setUp(self):
+        self.result = calculate_roi(100, 150_000, 4, 400_000)
+
+    def test_headline_is_three_year_roi(self):
+        page = render_html("Acme", self.result, "GBP")
+        self.assertIn('<div class="big">188% three-year ROI</div>', page)
+        self.assertIn("Adoption ramps 50% → 80% → 100%. At full adoption: 275% a year.", page)
+        self.assertIn("<h2>At full adoption (year 3 onwards)</h2>", page)
+        self.assertIn("<tr><th>Payback at full adoption</th><td>3.2 months</td></tr>", page)
+
+    def test_three_year_table_in_each_currency(self):
+        for code, s in (("USD", "$"), ("GBP", "£"), ("EUR", "€")):
+            with self.subTest(currency=code):
+                page = render_html("Acme", self.result, code)
+                table = page.split('<table class="three-year">', 1)[1].split("</table>", 1)[0]
+                self.assertIn(f"<tr><th>Year 1</th><td>50%</td><td>{s}750,000</td>"
+                              f"<td>{s}400,000</td><td>{s}350,000</td><td>{s}350,000</td></tr>",
+                              table)
+                self.assertIn(f"<tr><th>Year 3</th><td>100%</td><td>{s}1,500,000</td>"
+                              f"<td>{s}400,000</td><td>{s}1,100,000</td>"
+                              f"<td>{s}2,250,000</td></tr>", table)
+                self.assertIn(f'<tr class="total"><th>Total</th><td></td>'
+                              f"<td>{s}3,450,000</td><td>{s}1,200,000</td>"
+                              f"<td>{s}2,250,000</td><td></td></tr>", table)
+                self.assertIn("<tr><th>Three-year ROI</th><td>188%</td></tr>", page)
+                self.assertIn("<tr><th>Payback in year one</th><td>6.4 months</td></tr>", page)
+
+    def test_inputs_show_ramp(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(33.5, 70, 100))
+        page = render_html("Acme", r)
+        self.assertIn("<tr><th>Adoption ramp (years 1–3)</th>"
+                      "<td>33.5% / 70% / 100%</td></tr>", page)
+        self.assertIn("adoption of 33.5%, 70% and 100% in years one to three", page)
+
+    def test_no_payback_in_year_one_wording(self):
+        r = calculate_roi(100, 150_000, 4, 400_000, ramp=(0, 80, 100))
+        self.assertIn("<td>Does not pay back in year one</td>", render_html("Acme", r))
+        self.assertIn("Payback in year one:     Does not pay back in year one",
+                      format_three_year(r))
+
+    def test_no_negative_zero_anywhere(self):
+        # Year 3 net is 10,000 - 10,000.4 = -0.4, which must show as $0.
+        r = calculate_roi(1, 100_000, 4, 10_000.4, ramp=(100, 100, 100))
+        for output in (render_html("Acme", r), format_three_year(r), format_summary(r)):
+            self.assertNotIn("-$0", output)
+            self.assertNotIn("-0%", output)
+
+    def test_terminal_three_year_view(self):
+        out = format_three_year(self.result, "GBP")
+        self.assertIn("Three-year view (adoption 50% → 80% → 100%, tool cost fixed each year)",
+                      out)
+        self.assertIn("Year 2 at 80% adoption:  value £1,200,000, cost £400,000, net £800,000, "
+                      "cumulative net £1,150,000", out)
+        self.assertIn("Three-year ROI:          188%", out)
 
 
 # === End of report and summary output tests ===
@@ -377,6 +508,44 @@ class CommandLineTest(unittest.TestCase):
     def test_customer_name_is_stripped(self):
         _, out, _ = run_cli(BASE_ARGS + ["--hours-saved", "4", "--customer", "  Acme  "])
         self.assertIn("ROI estimate for Acme\n", out)
+
+
+class RampCommandLineTest(unittest.TestCase):
+    ARGS = ["--engineers", "100", "--loaded-cost", "150000", "--hours-saved", "4",
+            "--tool-cost", "400000", "--currency", "GBP"]
+
+    def test_default_ramp(self):
+        code, out, _ = run_cli(self.ARGS)
+        self.assertEqual(code, 0)
+        self.assertIn("Three-year ROI:          188%", out)
+        self.assertIn("adoption of 50%, 80% and 100% in years one to three", out)
+
+    def test_custom_ramp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "report.html")
+            code, out, _ = run_cli(self.ARGS + ["--ramp", "25,60,90", "--html", path])
+            self.assertEqual(code, 0)
+            self.assertIn("Year 1 at 25% adoption", out)
+            with open(path, encoding="utf-8") as f:
+                self.assertIn("25% / 60% / 90%", f.read())
+
+    def test_bad_ramp_exits_cleanly(self):
+        for ramp in ("50,80", "50,80,120", "a,b,c"):
+            with self.subTest(ramp=ramp):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
+                    main(self.ARGS + ["--ramp", ramp])
+                self.assertEqual(ctx.exception.code, 2)
+                self.assertIn("--ramp must be three percentages from 0 to 100", err.getvalue())
+                self.assertNotIn("Traceback", err.getvalue())
+
+    def test_ramp_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            main(["--help"])
+        self.assertIn("Adoption percentages for years one, two and three, separated by "
+                      "commas (default 50,80,100)", " ".join(out.getvalue().split()))
 
 
 # === End of command-line tests ===
