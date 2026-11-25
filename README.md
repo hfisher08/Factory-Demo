@@ -1,6 +1,10 @@
 # ROI calculator
 
+![tests](https://github.com/hfisher08/Factory-Demo/actions/workflows/tests.yml/badge.svg)
+
 Estimates the annual value of an AI agent rollout for an engineering team.
+GitHub Actions runs the test suite on Python 3.9 and 3.12 on every push to
+`main` and every pull request (see `.github/workflows/tests.yml`).
 
 ```
 python3 roi.py --customer "Acme" --engineers 100 --loaded-cost 200000 \

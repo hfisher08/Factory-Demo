@@ -15,6 +15,8 @@ and can write an HTML report. Tests live in `test_roi.py`.
 ## Commands
 
 - Run tests: `python3 -m unittest -v`
+- CI: GitHub Actions runs the same tests on Python 3.9 and 3.12 on every push to
+  `main` and every pull request. Keep the suite green before pushing.
 - Sample run: `python3 roi.py --customer "Acme" --engineers 100 --loaded-cost 200000 --hours-saved 4 --tool-cost 500000 --html report.html`
 
 ## Notes
