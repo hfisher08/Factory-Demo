@@ -7,6 +7,8 @@ python3 roi.py --customer "Acme" --engineers 100 --loaded-cost 200000 \
   --hours-saved 4 --tool-cost 500000 --html report.html
 ```
 
+Run `python3 roi.py --help` to see every option and a ready-to-copy example.
+
 Add `--currency GBP` or `--currency EUR` to label money in pounds or euros (default `USD`).
 Inputs are taken in that currency; no exchange-rate conversion is applied.
 
