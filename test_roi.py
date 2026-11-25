@@ -1,10 +1,11 @@
 import contextlib
 import io
 import os
+import shlex
 import tempfile
 import unittest
 
-from roi import (calculate_roi, format_money, format_percent, format_summary,
+from roi import (HELP_EXAMPLE, calculate_roi, format_money, format_percent, format_summary,
                  format_three_year, main, parse_ramp, render_html)
 
 
@@ -593,6 +594,32 @@ class RampCommandLineTest(unittest.TestCase):
             main(["--help"])
         self.assertIn("Adoption percentages for years one, two and three, separated by "
                       "commas (default 50,80,100)", " ".join(out.getvalue().split()))
+
+
+class HelpExampleTest(unittest.TestCase):
+    def help_text(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            main(["--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        return out.getvalue()
+
+    def test_help_shows_copyable_example(self):
+        self.assertIn(f"example:\n  {HELP_EXAMPLE}\n", self.help_text())
+
+    def test_help_explains_customer_and_engineers(self):
+        text = " ".join(self.help_text().split())
+        self.assertIn('Customer name shown on the report (default "Prospect")', text)
+        self.assertIn("Number of engineers using the tool", text)
+
+    def test_help_example_runs(self):
+        args = shlex.split(HELP_EXAMPLE)
+        self.assertEqual(args[:2], ["python3", "roi.py"])
+        code, out, err = run_cli(args[2:])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("ROI estimate for Acme Bank UK\n", out)
+        self.assertIn("Three-year ROI:          188%", out)
 
 
 # === End of command-line tests ===

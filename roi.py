@@ -407,10 +407,21 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 """
 
 
+HELP_EXAMPLE = ('python3 roi.py --customer "Acme Bank UK" --engineers 100 '
+                '--loaded-cost 150000 --hours-saved 4 --tool-cost 400000 --currency GBP')
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--customer", default="Prospect")
-    parser.add_argument("--engineers", type=int, required=True)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=f"example:\n  {HELP_EXAMPLE}",
+        # Keeps the example on one line so it can be copied and run as-is.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--customer", default="Prospect",
+                        help='Customer name shown on the report (default "Prospect")')
+    parser.add_argument("--engineers", type=int, required=True,
+                        help="Number of engineers using the tool")
     parser.add_argument("--loaded-cost", type=float, required=True,
                         help="Fully loaded annual cost per engineer, in the chosen --currency")
     parser.add_argument("--hours-saved", type=float, required=True,
