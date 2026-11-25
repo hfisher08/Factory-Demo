@@ -20,6 +20,9 @@ and can write an HTML report. Tests live in `test_roi.py`.
 ## Notes
 
 - `report.html` is generated output and is ignored by git.
+- `docs/` is published publicly via GitHub Pages. Generated reports committed there
+  are live at `https://hfisher08.github.io/Factory-Demo/<file>` within a minute of
+  pushing. Never commit real customer data to `docs/` without the customer's ok.
 - The report's inline JavaScript recalculates every figure live in the browser. It
   must mirror `calculate_roi` and the `format_*` helpers, and stay free of external
   dependencies. When you change a calculation, wording or format, change both sides.

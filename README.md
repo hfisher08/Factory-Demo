@@ -18,6 +18,21 @@ Use it live on a call when a customer wants to test the assumptions.
 The report carries Factory branding (logo in the header, Droid credit in the
 footer); the logos are inline SVG, so the file stays self-contained.
 
+## Sharing a report as a link
+
+The repository is published with GitHub Pages from the `docs/` folder. Anything
+in `docs/` is public at `https://hfisher08.github.io/Factory-Demo/<file>`. To
+share a report, generate it into `docs/` and push:
+
+```
+python3 roi.py --customer "Acme Bank UK" --engineers 100 --loaded-cost 150000 \
+  --hours-saved 4 --tool-cost 400000 --currency GBP --html docs/acme-bank-uk.html
+git add docs/acme-bank-uk.html && git commit -m "Add Acme Bank UK report" && git push
+```
+
+`docs/index.html` (the Acme Bank UK sample) is the landing page. Everything in
+`docs/` is publicly visible, so only publish numbers a customer is happy to share.
+
 Add `--currency GBP` or `--currency EUR` to label money in pounds or euros (default `USD`).
 Inputs are taken in that currency; no exchange-rate conversion is applied.
 
