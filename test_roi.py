@@ -42,7 +42,8 @@ class CalculateRoiTest(unittest.TestCase):
 class OutputTest(unittest.TestCase):
     def test_html_escapes_customer_name(self):
         page = render_html("<script>", calculate_roi(1, 100_000, 1, 1_000))
-        self.assertNotIn("<script>", page)
+        # The only real script tag is the report's own recalculation script.
+        self.assertEqual(page.count("<script>"), 1)
         self.assertIn("&lt;script&gt;", page)
 
     def test_cli_rejects_invalid_input(self):
@@ -77,7 +78,10 @@ class CurrencyTest(unittest.TestCase):
                 self.assertNotIn("$", summary)
                 page = render_html("Acme", self.result, code)
                 self.assertIn(f"<td>{symbol}1,500,000</td>", page)
-                self.assertNotIn("$", page)
+                # The currency selector and the recalculation script mention every
+                # currency, so only the generated figures are checked here.
+                figures = page.split('<form id="inputs-form">', 1)[0]
+                self.assertNotIn("$", figures)
 
     def test_cli_writes_report_in_chosen_currency(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -242,22 +246,33 @@ class ReportOutputTest(unittest.TestCase):
     def setUp(self):
         self.result = calculate_roi(100, 200_000, 4, 500_000)
 
-    def test_html_has_inputs_table_in_chosen_currency(self):
+    def test_html_has_inputs_form_in_chosen_currency(self):
         r = calculate_roi(12, 150_000, 4.5, 60_000, working_weeks=44, hours_per_week=37.5)
         for code, symbol in (("USD", "$"), ("GBP", "£"), ("EUR", "€")):
             with self.subTest(currency=code):
                 page = render_html("Acme", r, code)
                 self.assertIn("<h2>Inputs and assumptions</h2>", page)
-                inputs = page.split('<table class="inputs">', 1)[1].split("</table>", 1)[0]
-                for label, value in (
-                    ("Engineers", "12"),
-                    ("Fully loaded annual cost per engineer", f"{symbol}150,000"),
-                    ("Hours saved per engineer per week", "4.5"),
-                    ("Working weeks per year", "44"),
-                    ("Hours per working week", "37.5"),
-                    ("Annual tool cost", f"{symbol}60,000"),
+                form = page.split('<form id="inputs-form">', 1)[1].split("</form>", 1)[0]
+                for fid, value in (
+                    ("in-engineers", "12"),
+                    ("in-loaded-cost", "150000"),
+                    ("in-hours-saved", "4.5"),
+                    ("in-weeks", "44"),
+                    ("in-hours-week", "37.5"),
+                    ("in-tool-cost", "60000"),
+                    ("in-ramp1", "50"),
+                    ("in-ramp2", "80"),
+                    ("in-ramp3", "100"),
                 ):
-                    self.assertIn(f"<tr><th>{label}</th><td>{value}</td></tr>", inputs)
+                    line = next(l for l in form.splitlines() if f'id="{fid}"' in l)
+                    self.assertIn(f'value="{value}"', line)
+                for label in ("Engineers", "Fully loaded annual cost per engineer",
+                              "Hours saved per engineer per week",
+                              "Working weeks per year", "Hours per working week",
+                              "Annual tool cost"):
+                    self.assertIn(f">{label}</label>", form)
+                self.assertIn("Adoption ramp (years 1–3)", form)
+                self.assertIn(f'<option value="{code}" selected>', form)
                 self.assertIn(f"All amounts are in {code} ({symbol}). "
                               "No exchange-rate conversion is applied.", page)
 
@@ -336,7 +351,8 @@ class ReportOutputTest(unittest.TestCase):
 
     def test_inputs_show_value_as_entered(self):
         page = render_html("Acme", calculate_roi(1, 100_000, 4.125, 1))
-        self.assertIn("<tr><th>Hours saved per engineer per week</th><td>4.125</td></tr>", page)
+        line = next(l for l in page.splitlines() if 'id="in-hours-saved"' in l)
+        self.assertIn('value="4.125"', line)
 
     def test_finite_payback_wording(self):
         self.assertIn("3.0 months", format_summary(self.result))
@@ -344,7 +360,8 @@ class ReportOutputTest(unittest.TestCase):
     def test_html_escapes_customer_name_in_all_places(self):
         page = render_html('<b>"A&B"</b>', self.result, "GBP")
         self.assertNotIn("<b>", page)
-        self.assertEqual(page.count("&lt;b&gt;&quot;A&amp;B&quot;&lt;/b&gt;"), 2)
+        # Title, h1 and the customer-name input.
+        self.assertEqual(page.count("&lt;b&gt;&quot;A&amp;B&quot;&lt;/b&gt;"), 3)
 
 
 class ThreeYearReportTest(unittest.TestCase):
@@ -378,8 +395,9 @@ class ThreeYearReportTest(unittest.TestCase):
     def test_inputs_show_ramp(self):
         r = calculate_roi(100, 150_000, 4, 400_000, ramp=(33.5, 70, 100))
         page = render_html("Acme", r)
-        self.assertIn("<tr><th>Adoption ramp (years 1–3)</th>"
-                      "<td>33.5% / 70% / 100%</td></tr>", page)
+        line = next(l for l in page.splitlines() if 'id="in-ramp1"' in l)
+        for value in ('value="33.5"', 'value="70"', 'value="100"'):
+            self.assertIn(value, line)
         self.assertIn("adoption of 33.5%, 70% and 100% in years one to three", page)
 
     def test_no_payback_in_year_one_wording(self):
@@ -398,7 +416,9 @@ class ThreeYearReportTest(unittest.TestCase):
     def test_ramp_below_100_in_year_three_does_not_claim_full_adoption(self):
         r = calculate_roi(100, 150_000, 4, 400_000, ramp=(25, 60, 90))
         page = render_html("Acme", r, "GBP")
-        self.assertNotIn("year 3 onwards", page)
+        # The interactive script mentions "year 3 onwards" for other ramps, so
+        # check the rendered heading itself.
+        self.assertNotIn("<h2>At full adoption (year 3 onwards)</h2>", page)
         self.assertIn("<h2>At full adoption (100%)</h2>", page)
         self.assertIn("Adoption by year: 25% → 60% → 90%. Full adoption is not reached; "
                       "at 100% the annual ROI would be 275%.", page)
@@ -438,6 +458,36 @@ class ThreeYearReportTest(unittest.TestCase):
         self.assertIn("Year 2 at 80% adoption:  value £1,200,000, cost £400,000, net £800,000, "
                       "cumulative net £1,150,000", out)
         self.assertIn("Three-year ROI:          188%", out)
+
+
+class InteractiveReportTest(unittest.TestCase):
+    def setUp(self):
+        self.page = render_html("Acme Bank UK",
+                                calculate_roi(100, 150_000, 4, 400_000), "GBP")
+
+    def test_form_prefilled_from_result(self):
+        for fid, value in (("in-engineers", "100"), ("in-loaded-cost", "150000"),
+                           ("in-hours-saved", "4"), ("in-tool-cost", "400000"),
+                           ("in-weeks", "46"), ("in-hours-week", "40"),
+                           ("in-ramp1", "50"), ("in-ramp2", "80"), ("in-ramp3", "100")):
+            with self.subTest(field=fid):
+                line = next(l for l in self.page.splitlines() if f'id="{fid}"' in l)
+                self.assertIn(f'value="{value}"', line)
+        self.assertIn('id="in-customer" type="text" value="Acme Bank UK"', self.page)
+        self.assertIn('<option value="GBP" selected>GBP (£)</option>', self.page)
+
+    def test_live_recalc_script_included(self):
+        self.assertIn("<script>", self.page)
+        self.assertIn("function recalc()", self.page)
+        self.assertIn('addEventListener("input", recalc)', self.page)
+
+    def test_error_and_warning_start_hidden(self):
+        self.assertIn('id="input-error" role="alert" hidden>', self.page)
+        self.assertIn('id="week-warning" hidden></p>', self.page)
+
+    def test_explains_interactivity_and_privacy(self):
+        self.assertIn("updates instantly", self.page)
+        self.assertIn("Nothing you type is sent anywhere.", self.page)
 
 
 # === End of report and summary output tests ===
@@ -564,7 +614,11 @@ class RampCommandLineTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("Year 1 at 25% adoption", out)
             with open(path, encoding="utf-8") as f:
-                self.assertIn("25% / 60% / 90%", f.read())
+                page = f.read()
+            self.assertIn("Adoption by year: 25% → 60% → 90%.", page)
+            ramp_line = next(l for l in page.splitlines() if 'id="in-ramp1"' in l)
+            for value in ('value="25"', 'value="60"', 'value="90"'):
+                self.assertIn(value, ramp_line)
 
     def test_bad_ramp_exits_cleanly(self):
         for ramp in ("50,80", "50,80,120", "a,b,c"):

@@ -20,3 +20,6 @@ and can write an HTML report. Tests live in `test_roi.py`.
 ## Notes
 
 - `report.html` is generated output and is ignored by git.
+- The report's inline JavaScript recalculates every figure live in the browser. It
+  must mirror `calculate_roi` and the `format_*` helpers, and stay free of external
+  dependencies. When you change a calculation, wording or format, change both sides.

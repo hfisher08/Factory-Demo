@@ -9,6 +9,13 @@ python3 roi.py --customer "Acme" --engineers 100 --loaded-cost 200000 \
 
 Run `python3 roi.py --help` to see every option and a ready-to-copy example.
 
+## Interactive report
+
+The HTML report is interactive: open it in a browser and edit any input (engineers,
+costs, hours saved, adoption ramp, currency) and every figure updates instantly.
+The recalculation runs entirely in the page; nothing you type is sent anywhere.
+Use it live on a call when a customer wants to test the assumptions.
+
 Add `--currency GBP` or `--currency EUR` to label money in pounds or euros (default `USD`).
 Inputs are taken in that currency; no exchange-rate conversion is applied.
 

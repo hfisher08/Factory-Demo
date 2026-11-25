@@ -240,17 +240,254 @@ def three_year_summary_rows(result: RoiResult):
     ]
 
 
-def input_rows(result: RoiResult, currency: str = "USD"):
-    return [
-        ("Engineers", format_number(result.engineers)),
-        ("Fully loaded annual cost per engineer",
-         format_money(result.loaded_annual_cost, currency)),
-        ("Hours saved per engineer per week", format_number(result.hours_saved_per_week)),
-        ("Working weeks per year", format_number(result.working_weeks)),
-        ("Hours per working week", format_number(result.hours_per_week)),
-        ("Annual tool cost", format_money(result.annual_cost, currency)),
-        ("Adoption ramp (years 1–3)", format_ramp(result.ramp)),
+def _num_attr(value) -> str:
+    """Exact value for a form field, so the browser can parse it back."""
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.10g}"
+
+
+def _field(field_id: str, label: str, value, extra: str = "") -> str:
+    return (f'<tr><th><label for="{field_id}">{html.escape(label)}</label></th>'
+            f'<td><input id="{field_id}" type="number" step="any"{extra} '
+            f'value="{_num_attr(value)}"></td></tr>')
+
+
+def _inputs_form(customer: str, result: RoiResult, currency: str) -> str:
+    name = html.escape(customer, quote=True)
+    rows = [
+        f'<tr><th><label for="in-customer">Customer name</label></th>'
+        f'<td><input id="in-customer" type="text" value="{name}"></td></tr>',
+        _field("in-engineers", "Engineers", result.engineers, ' min="1"'),
+        _field("in-loaded-cost", "Fully loaded annual cost per engineer",
+               result.loaded_annual_cost, ' min="0"'),
+        _field("in-hours-saved", "Hours saved per engineer per week",
+               result.hours_saved_per_week, ' min="0"'),
+        _field("in-weeks", "Working weeks per year", result.working_weeks,
+               ' min="1" max="52"'),
+        _field("in-hours-week", "Hours per working week", result.hours_per_week,
+               ' min="0"'),
+        _field("in-tool-cost", "Annual tool cost", result.annual_cost, ' min="0"'),
     ]
+    ramp_inputs = "".join(
+        f'<input id="in-ramp{i}" class="ramp" type="number" step="any" '
+        f'min="0" max="100" value="{_num_attr(v)}">'
+        for i, v in enumerate(result.ramp, start=1))
+    rows.append(f'<tr><th>Adoption ramp (years 1–3)</th><td>{ramp_inputs}</td></tr>')
+    options = "".join(
+        f'<option value="{code}"{" selected" if code == currency else ""}>'
+        f'{code} ({CURRENCY_SYMBOLS[code]})</option>'
+        for code in sorted(CURRENCY_SYMBOLS))
+    rows.append('<tr><th><label for="in-currency">Currency</label></th>'
+                f'<td><select id="in-currency">{options}</select></td></tr>')
+    return ('<form id="inputs-form">\n<table class="inputs">\n' + "\n".join(rows) +
+            "\n</table>\n</form>\n"
+            '<p id="input-error" role="alert" hidden>Some inputs are invalid '
+            '(highlighted in red), so the figures are unchanged.</p>\n'
+            '<p id="week-warning" hidden></p>\n'
+            '<p class="note"><strong>This report is interactive:</strong> edit any '
+            'input above and every figure on the page updates instantly, entirely in '
+            'your browser. Nothing you type is sent anywhere.</p>')
+
+
+# Recalculates every figure on the page when an input changes. It mirrors
+# calculate_roi and the format_* helpers above; keep the two in sync.
+_REPORT_SCRIPT = r"""<script>
+(function () {
+  "use strict";
+  var SYM = { USD: "$", GBP: "£", EUR: "€" };
+
+  function el(id) { return document.getElementById(id); }
+
+  function grouped(intPart) {
+    return intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function fmtMoney(x, sym, decimals) {
+    var scale = Math.pow(10, decimals);
+    var r = Math.round(x * scale) / scale;
+    var sign = r < 0 ? "-" : "";
+    var parts = Math.abs(r).toFixed(decimals).split(".");
+    parts[0] = grouped(parts[0]);
+    return sign + sym + parts.join(".");
+  }
+
+  function fmtPercent(x) {
+    // Halves round away from zero, and -0 becomes 0, as in format_percent.
+    var r = (x < 0 ? -1 : 1) * Math.round(Math.abs(x));
+    return grouped(String(r)) + "%";
+  }
+
+  function fmtNumber(x) {
+    var neg = x < 0 ? "-" : "";
+    var a = Math.abs(x);
+    var s;
+    if (Number.isInteger(a)) {
+      s = String(a);
+    } else {
+      s = a.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+    }
+    var parts = s.split(".");
+    parts[0] = grouped(parts[0]);
+    return neg + parts.join(".");
+  }
+
+  function fmtAdoption(x) { return fmtNumber(x) + "%"; }
+
+  function fmtPayback(months, neverText) {
+    if (!isFinite(months)) return neverText;
+    return months.toFixed(1) + " months";
+  }
+
+  function field(id) { return parseFloat(el(id).value); }
+
+  function mark(id, ok) {
+    el(id).classList.toggle("invalid", !ok);
+    return ok;
+  }
+
+  function findByPrefix(selector, prefix) {
+    var nodes = document.querySelectorAll(selector);
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].textContent.indexOf(prefix) === 0) return nodes[i];
+    }
+    return null;
+  }
+
+  function recalc() {
+    var engineers = field("in-engineers");
+    var loaded = field("in-loaded-cost");
+    var hours = field("in-hours-saved");
+    var tool = field("in-tool-cost");
+    var weeks = field("in-weeks");
+    var hpw = field("in-hours-week");
+    var ramp = [field("in-ramp1"), field("in-ramp2"), field("in-ramp3")];
+
+    var ok = true;
+    ok = mark("in-engineers", isFinite(engineers) && engineers > 0) && ok;
+    ok = mark("in-loaded-cost", isFinite(loaded) && loaded > 0) && ok;
+    ok = mark("in-hours-saved", isFinite(hours) && hours >= 0 && hours <= hpw) && ok;
+    ok = mark("in-tool-cost", isFinite(tool) && tool > 0) && ok;
+    ok = mark("in-weeks", isFinite(weeks) && weeks >= 1 && weeks <= 52) && ok;
+    ok = mark("in-hours-week", isFinite(hpw) && hpw > 0) && ok;
+    for (var i = 0; i < 3; i++) {
+      ok = mark("in-ramp" + (i + 1),
+                isFinite(ramp[i]) && ramp[i] >= 0 && ramp[i] <= 100) && ok;
+    }
+    var err = el("input-error");
+    if (!ok) { err.hidden = false; return; }
+
+    var hourly = loaded / (weeks * hpw);
+    var hoursYear = engineers * hours * weeks;
+    var annualValue = hoursYear * hourly;
+    var net = annualValue - tool;
+    var roi = net / tool * 100;
+    var years = [];
+    var cum = 0;
+    var totalValue = 0;
+    for (i = 0; i < 3; i++) {
+      var yv = annualValue * ramp[i] / 100;
+      var yn = yv - tool;
+      cum += yn;
+      totalValue += yv;
+      years.push({ adoption: ramp[i], value: yv, net: yn, cum: cum });
+    }
+    var totalCost = tool * 3;
+    var totalNet = totalValue - totalCost;
+    var threeRoi = totalNet / totalCost * 100;
+    if (![hourly, annualValue, net, roi, totalValue, totalCost, totalNet, threeRoi]
+        .every(isFinite)) { err.hidden = false; return; }
+    err.hidden = true;
+
+    var code = el("in-currency").value;
+    var sym = SYM[code];
+    var money = function (x) { return fmtMoney(x, sym, 0); };
+
+    var customer = el("in-customer").value.trim() || "Prospect";
+    document.title = "ROI estimate for " + customer;
+    document.querySelector("h1").textContent = "AI agent ROI estimate: " + customer;
+
+    document.querySelector(".big").textContent = fmtPercent(threeRoi) + " three-year ROI";
+    var sub = "Adoption by year: " + ramp.map(fmtAdoption).join(" → ") + ". ";
+    if (ramp[2] === 100) {
+      sub += "At full adoption: " + fmtPercent(roi) + " a year.";
+    } else {
+      sub += "Full adoption is not reached; at 100% the annual ROI would be " +
+        fmtPercent(roi) + ".";
+    }
+    document.querySelector(".sub").textContent = sub;
+
+    var body = "";
+    for (i = 0; i < 3; i++) {
+      body += "<tr><th>Year " + (i + 1) + "</th><td>" + fmtAdoption(years[i].adoption) +
+        "</td><td>" + money(years[i].value) + "</td><td>" + money(tool) + "</td><td>" +
+        money(years[i].net) + "</td><td>" + money(years[i].cum) + "</td></tr>";
+    }
+    body += '<tr class="total"><th>Total</th><td></td><td>' + money(totalValue) +
+      "</td><td>" + money(totalCost) + "</td><td>" + money(totalNet) +
+      "</td><td></td></tr>";
+    document.querySelector("table.three-year tbody").innerHTML = body;
+
+    var yearOnePayback = years[0].value > tool ? tool / (years[0].value / 12) : Infinity;
+    document.querySelector("table.three-year-summary").innerHTML =
+      "<tr><th>Three-year ROI</th><td>" + fmtPercent(threeRoi) + "</td></tr>" +
+      "<tr><th>Payback in year one</th><td>" +
+      fmtPayback(yearOnePayback, "Does not pay back in year one") + "</td></tr>";
+
+    var payback = annualValue > tool ? tool / (annualValue / 12) : Infinity;
+    document.querySelector("table.results").innerHTML =
+      "<tr><th>Engineer hourly cost</th><td>" + fmtMoney(hourly, sym, 2) + "</td></tr>" +
+      "<tr><th>Hours saved per year</th><td>" + grouped(String(Math.round(hoursYear))) +
+      "</td></tr>" +
+      "<tr><th>Estimated value of time saved</th><td>" + money(annualValue) +
+      "</td></tr>" +
+      "<tr><th>Annual tool cost</th><td>" + money(tool) + "</td></tr>" +
+      "<tr><th>Estimated net annual value</th><td>" + money(net) + "</td></tr>" +
+      "<tr><th>Annual ROI at full adoption</th><td>" + fmtPercent(roi) + "</td></tr>" +
+      "<tr><th>Payback at full adoption</th><td>" +
+      fmtPayback(payback, "Does not pay back (value does not exceed cost)") +
+      "</td></tr>";
+
+    var heading = findByPrefix("h2", "At full adoption");
+    if (heading) {
+      heading.textContent = ramp[2] === 100 ? "At full adoption (year 3 onwards)" :
+        "At full adoption (100%)";
+    }
+
+    var note = findByPrefix("p.note", "All amounts are in");
+    if (note) {
+      note.textContent = "All amounts are in " + code + " (" + sym +
+        "). No exchange-rate conversion is applied.";
+    }
+
+    var caveat = findByPrefix("ul.caveats li", "The three-year view assumes adoption of");
+    if (caveat) {
+      caveat.textContent = "The three-year view assumes adoption of " +
+        fmtAdoption(ramp[0]) + ", " + fmtAdoption(ramp[1]) + " and " +
+        fmtAdoption(ramp[2]) + " in years one to three. The full-adoption figures " +
+        "assume no ramp-up, so they are a best case.";
+    }
+
+    var warn = el("week-warning");
+    if (hours > 0.2 * hpw) {
+      var share = Math.round(hours / hpw * 1000) / 10;
+      warn.textContent = "Warning: hours saved per week (" + fmtNumber(hours) + ") is " +
+        fmtNumber(share) + "% of a " + fmtNumber(hpw) +
+        "-hour week. A customer may see this as unrealistic; double-check it " +
+        "before sharing.";
+      warn.hidden = false;
+    } else {
+      warn.hidden = true;
+    }
+  }
+
+  var form = el("inputs-form");
+  form.addEventListener("input", recalc);
+  form.addEventListener("change", recalc);
+  form.addEventListener("submit", function (event) { event.preventDefault(); });
+  recalc();
+})();
+</script>"""
 
 
 ROUNDING_NOTE = (
@@ -348,7 +585,7 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
     three_year = _three_year_table(result, currency)
     three_year_summary = _table_rows(three_year_summary_rows(result))
     rows = _table_rows(summary_rows(result, currency))
-    inputs = _table_rows(input_rows(result, currency))
+    form = _inputs_form(customer, result, currency)
     currency_note = html.escape(
         f"All amounts are in {currency} ({CURRENCY_SYMBOLS[currency]}). "
         "No exchange-rate conversion is applied."
@@ -378,6 +615,15 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
   .three-year td {{ font-weight: 400; }}
   .three-year .total th, .three-year .total td {{ font-weight: 700;
          border-top: 2px solid #1c1917; }}
+  table.inputs input, table.inputs select {{ font: inherit; font-weight: 400;
+         padding: 4px 6px; border: 1px solid #d6d3d1; border-radius: 6px;
+         width: 120px; text-align: right; }}
+  table.inputs input[type="text"] {{ width: 240px; text-align: left; }}
+  table.inputs input.ramp {{ width: 64px; margin-right: 6px; }}
+  table.inputs input.invalid {{ border-color: #dc2626; background: #fef2f2; }}
+  #input-error {{ color: #b91c1c; font-weight: 600; }}
+  #week-warning {{ background: #fffbeb; border: 1px solid #f59e0b; border-radius: 6px;
+         padding: 10px 14px; color: #92400e; }}
   .big {{ font-size: 40px; font-weight: 700; color: #ea580c; margin: 24px 0 0; }}
   .sub {{ font-size: 15px; margin-top: 4px; }}
   .note {{ font-size: 14px; margin-top: 12px; }}
@@ -397,11 +643,12 @@ def render_html(customer: str, result: RoiResult, currency: str = "USD") -> str:
 <table class="results">{rows}</table>
 <p class="note">{html.escape(ROUNDING_NOTE)}</p>
 <h2>Inputs and assumptions</h2>
-<table class="inputs">{inputs}</table>
+{form}
 <p class="note">{currency_note}</p>
 <h2>Caveats</h2>
 <p>This is an estimate, not a forecast.</p>
 <ul class="caveats">{caveat_items}</ul>
+{_REPORT_SCRIPT}
 </body>
 </html>
 """
